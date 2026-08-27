@@ -318,13 +318,73 @@ async function startServer() {
         tipoConsulta = "distNSU", // "distNSU" | "consNSU" | "consChNFe"
         ultNSU = "0", 
         nsu, 
-        chNFe 
+        chNFe,
+        pfxBase64: inlinePfx,
+        password: inlinePassword
       } = req.body;
 
       const rawCnpj = (customCnpj || "").replace(/\D/g, "");
-      const session = rawCnpj 
+      let session = rawCnpj 
         ? certificateSessions.get(rawCnpj) 
         : (lastActiveCnpj ? certificateSessions.get(lastActiveCnpj) : null);
+
+      // On-the-fly restore if inline PFX is provided and session was lost in memory
+      if (!session && inlinePfx && inlinePassword) {
+        try {
+          const pfxRawBuffer = Buffer.from(inlinePfx, "base64");
+          const p12Der = forge.util.decode64(inlinePfx);
+          const p12Asn1 = forge.asn1.fromDer(p12Der);
+          const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, inlinePassword);
+          const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
+          const bagList = certBags[forge.pki.oids.certBag] || [];
+          let primaryBag = bagList[0];
+          for (const b of bagList) {
+            if (b.cert) {
+              primaryBag = b;
+              break;
+            }
+          }
+          if (primaryBag?.cert) {
+            const certPem = forge.pki.certificateToPem(primaryBag.cert);
+            const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag });
+            const keyBagsAlt = p12.getBags({ bagType: forge.pki.oids.keyBag });
+            const keyList = [...(keyBags[forge.pki.oids.pkcs8ShroudedKeyBag] || []), ...(keyBagsAlt[forge.pki.oids.keyBag] || [])];
+            let keyPem = "";
+            if (keyList.length > 0 && keyList[0].key) {
+              keyPem = forge.pki.privateKeyToPem(keyList[0].key);
+            }
+
+            const cleanCnpj = rawCnpj || "UNKNOWN";
+            const newSession: ActiveCertSession = {
+              certificate: {
+                fileName: "certificado.pfx",
+                cnpj: cleanCnpj,
+                razaoSocial: "Empresa",
+                emissor: "AC",
+                numeroSerie: primaryBag.cert.serialNumber,
+                validadeInicio: primaryBag.cert.validity.notBefore.toISOString(),
+                validadeFim: primaryBag.cert.validity.notAfter.toISOString(),
+                diasRestantes: 365,
+                status: "VALIDO",
+                tipo: "A1",
+                uf: customUf || "SP",
+                ambiente: customAmbiente || "PRODUCAO",
+                hasPrivateKey: !!keyPem,
+                uploadedAt: new Date().toISOString()
+              },
+              pfxBuffer: pfxRawBuffer,
+              password: inlinePassword,
+              certPem,
+              keyPem
+            };
+            certificateSessions.set(cleanCnpj, newSession);
+            lastActiveCnpj = cleanCnpj;
+            session = newSession;
+          }
+        } catch (restoreErr) {
+          console.warn("[SEFAZ Distribuicao] Inline session restore error:", restoreErr);
+        }
+      }
 
       const certInfo = session?.certificate;
       const targetCnpj = rawCnpj || certInfo?.cnpj?.replace(/\D/g, "") || "";
@@ -335,10 +395,16 @@ async function startServer() {
         return res.status(400).json({ error: "CNPJ válido de 14 dígitos é obrigatório para consulta na SEFAZ." });
       }
 
+      if (!session) {
+        return res.status(400).json({ 
+          error: `Sessão do certificado A1 não encontrada na memória do servidor para o CNPJ ${targetCnpj}. Por favor, faça o upload do arquivo .pfx com sua senha na aba 'Certificados Digitais A1'.` 
+        });
+      }
+
       const tpAmb = ambiente === "HOMOLOGACAO" ? "2" : "1";
       const cUFCode = UF_IBGE_MAP[uf] || "91";
 
-      // Build SOAP body
+      // Build SOAP body with exact matching tags and proper SEFAZ schema
       let queryNode = "";
       if (tipoConsulta === "consChNFe" && chNFe) {
         queryNode = `<consChNFe><chNFe>${chNFe.trim().replace(/\D/g, "")}</chNFe></consChNFe>`;
@@ -360,13 +426,19 @@ async function startServer() {
           ${queryNode}
         </distDFeInt>
       </nfeDadosMsg>
-    </nfeDistribuicaoDFeInteresse>
+    </nfeDistDFeInteresse>
   </soap12:Body>
 </soap12:Envelope>`;
 
-      const wsUrl = ambiente === "HOMOLOGACAO"
-        ? "https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
-        : "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
+      const wsUrls = ambiente === "HOMOLOGACAO"
+        ? [
+            "https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx",
+            "https://hom.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
+          ]
+        : [
+            "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx",
+            "https://www.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
+          ];
 
       // Make mTLS HTTPS request if session exists for this certificate
       let httpsAgent: https.Agent | undefined;
@@ -389,40 +461,62 @@ async function startServer() {
       let soapResponseText = "";
       let requestError: any = null;
 
-      try {
-        const urlObj = new URL(wsUrl);
-        const reqOptions: https.RequestOptions = {
-          hostname: urlObj.hostname,
-          port: 443,
-          path: urlObj.pathname,
-          method: "POST",
-          agent: httpsAgent,
-          headers: {
-            "Content-Type": 'application/soap+xml; charset=utf-8; action="http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe/nfeDistDFeInteresse"',
-            "Content-Length": Buffer.byteLength(soapXml, "utf8")
-          },
-          timeout: 15000
-        };
+      // Try primary and fallback WS URLs
+      for (const wsUrl of wsUrls) {
+        try {
+          const urlObj = new URL(wsUrl);
+          const soapAction = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe/nfeDistDFeInteresse";
+          const reqOptions: https.RequestOptions = {
+            hostname: urlObj.hostname,
+            port: 443,
+            path: urlObj.pathname,
+            method: "POST",
+            agent: httpsAgent,
+            headers: {
+              "Content-Type": `application/soap+xml; charset=utf-8; action="${soapAction}"`,
+              "SOAPAction": soapAction,
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SEFAZ-PDV-Sync/1.0",
+              "Content-Length": Buffer.byteLength(soapXml, "utf8"),
+              "Accept": "application/soap+xml, text/xml, */*"
+            },
+            timeout: 15000
+          };
 
-        soapResponseText = await new Promise<string>((resolve, reject) => {
-          const reqHttp = https.request(reqOptions, (resHttp) => {
-            let data = "";
-            resHttp.setEncoding("utf8");
-            resHttp.on("data", (chunk) => { data += chunk; });
-            resHttp.on("end", () => { resolve(data); });
+          soapResponseText = await new Promise<string>((resolve, reject) => {
+            const reqHttp = https.request(reqOptions, (resHttp) => {
+              let data = "";
+              resHttp.setEncoding("utf8");
+              resHttp.on("data", (chunk) => { data += chunk; });
+              resHttp.on("end", () => {
+                // If SEFAZ returned SOAP XML even with HTTP 500/400 (SOAP Faults), resolve it to parse cStat/xMotivo
+                if (data && (data.includes("<cStat>") || data.includes("<soap:Fault>") || data.includes("<soap12:Fault>"))) {
+                  resolve(data);
+                } else if (resHttp.statusCode && resHttp.statusCode >= 400) {
+                  reject(new Error(`SEFAZ HTTP ${resHttp.statusCode}: ${data.slice(0, 200) || resHttp.statusMessage}`));
+                } else {
+                  resolve(data);
+                }
+              });
+            });
+
+            reqHttp.on("error", (e) => reject(e));
+            reqHttp.on("timeout", () => {
+              reqHttp.destroy();
+              reject(new Error("Timeout na comunicação com a SEFAZ Nacional (15s)"));
+            });
+
+            reqHttp.write(soapXml);
+            reqHttp.end();
           });
 
-          reqHttp.on("error", (e) => reject(e));
-          reqHttp.on("timeout", () => {
-            reqHttp.destroy();
-            reject(new Error("Timeout na comunicação com a SEFAZ Nacional (15s)"));
-          });
-
-          reqHttp.write(soapXml);
-          reqHttp.end();
-        });
-      } catch (e: any) {
-        requestError = e;
+          if (soapResponseText) {
+            requestError = null;
+            break;
+          }
+        } catch (e: any) {
+          requestError = e;
+          console.warn(`[SEFAZ Distribuicao] Attempt failed on ${wsUrl}:`, e.message);
+        }
       }
 
       // Parse SEFAZ XML response
@@ -484,9 +578,412 @@ async function startServer() {
     }
   });
 
-  // Proxy endpoint to forward requests to the user's unified PDV API (Central Database)
+  // ==========================================
+  // PDV API LIVE AUTHENTICATION & SYNC ENGINE
+  // ==========================================
+  const PDV_CONFIG = {
+    baseUrl: "http://8c1a09f30719.sn.mynetname.net:65000/pdvapi",
+    usuario: "HUGO ALVES",
+    senha: "tijuca"
+  };
+
+  let pdvAuthSession: {
+    token: string;
+    expiraEm: number;
+    tokenTimestamp: number;
+    usuario: string;
+    baseUrl: string;
+  } | null = null;
+
+  let cachedSwaggerDocs: any = null;
+  let cachedFullPdvData: any = null;
+  let lastPdvSyncTimestamp: string | null = null;
+
+  async function getPdvAuthToken(forceRefresh = false): Promise<string> {
+    const now = Date.now();
+    // Re-use token if valid (leave 5 minute safety buffer)
+    if (
+      !forceRefresh &&
+      pdvAuthSession &&
+      pdvAuthSession.token &&
+      now < pdvAuthSession.tokenTimestamp + (pdvAuthSession.expiraEm - 300) * 1000
+    ) {
+      return pdvAuthSession.token;
+    }
+
+    const loginUrl = `${PDV_CONFIG.baseUrl.replace(/\/+$/, "")}/api/public/login`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const resp = await fetch(loginUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify({
+          Usuario: PDV_CONFIG.usuario,
+          Senha: PDV_CONFIG.senha
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`Falha no login PDV API (${resp.status}): ${errText.slice(0, 150)}`);
+      }
+
+      const data = await resp.json();
+      if (!data.Token) {
+        throw new Error("Resposta de login não continha campo 'Token'");
+      }
+
+      pdvAuthSession = {
+        token: data.Token,
+        expiraEm: data.ExpiraEm || 86400,
+        tokenTimestamp: Date.now(),
+        usuario: PDV_CONFIG.usuario,
+        baseUrl: PDV_CONFIG.baseUrl
+      };
+
+      console.log(`[PDV API] Autenticado com sucesso para usuário "${PDV_CONFIG.usuario}"! Token válido por ${pdvAuthSession.expiraEm}s.`);
+      return pdvAuthSession.token;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      console.error("[PDV API] Erro ao autenticar no PDV API:", err.message);
+      throw err;
+    }
+  }
+
+  // 1. Endpoint de Login / Autenticação Explícita
+  app.post("/api/pdv/auth/login", async (req, res) => {
+    const { usuario = "HUGO ALVES", senha = "tijuca", baseUrl = PDV_CONFIG.baseUrl } = req.body;
+    try {
+      PDV_CONFIG.usuario = usuario;
+      PDV_CONFIG.senha = senha;
+      PDV_CONFIG.baseUrl = baseUrl;
+
+      const token = await getPdvAuthToken(true);
+      res.json({
+        success: true,
+        message: `Autenticação realizada com sucesso para o usuário ${usuario}!`,
+        tokenPreview: `${token.slice(0, 25)}...`,
+        expiraEm: pdvAuthSession?.expiraEm,
+        usuario,
+        baseUrl,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      res.status(401).json({
+        success: false,
+        error: "Falha de autenticação na API PDV",
+        details: err.message
+      });
+    }
+  });
+
+  // 2. Endpoint de Status da Conexão Live PDV
+  app.get("/api/pdv/status", async (req, res) => {
+    try {
+      const token = await getPdvAuthToken(false);
+      res.json({
+        online: true,
+        authenticated: true,
+        usuario: PDV_CONFIG.usuario,
+        baseUrl: PDV_CONFIG.baseUrl,
+        tokenPreview: token ? `${token.slice(0, 20)}...` : null,
+        hasCachedData: !!cachedFullPdvData,
+        lastSyncTimestamp: lastPdvSyncTimestamp,
+        summary: cachedFullPdvData?.summary || null
+      });
+    } catch (err: any) {
+      res.json({
+        online: false,
+        authenticated: false,
+        usuario: PDV_CONFIG.usuario,
+        baseUrl: PDV_CONFIG.baseUrl,
+        error: err.message,
+        hasCachedData: !!cachedFullPdvData,
+        lastSyncTimestamp: lastPdvSyncTimestamp
+      });
+    }
+  });
+
+  // 3. Endpoint do Swagger Catalog com todos os 49 endpoints
+  app.get("/api/pdv/swagger", async (req, res) => {
+    try {
+      if (cachedSwaggerDocs) {
+        return res.json(cachedSwaggerDocs);
+      }
+
+      const swaggerUrl = `${PDV_CONFIG.baseUrl.replace(/\/+$/, "")}/swagger/docs/v1`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 6000);
+      const resp = await fetch(swaggerUrl, { signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (!resp.ok) {
+        throw new Error(`Swagger HTTP ${resp.status}`);
+      }
+
+      const swaggerData = await resp.json();
+      
+      // Parse endpoints into clean list
+      const endpointsList: any[] = [];
+      if (swaggerData.paths) {
+        for (const [path, methods] of Object.entries(swaggerData.paths as Record<string, any>)) {
+          for (const [method, op] of Object.entries(methods as Record<string, any>)) {
+            endpointsList.push({
+              path,
+              method: method.toUpperCase(),
+              tags: op.tags || [],
+              summary: op.summary || op.operationId || path,
+              operationId: op.operationId,
+              parameters: op.parameters || [],
+              responses: op.responses || {}
+            });
+          }
+        }
+      }
+
+      cachedSwaggerDocs = {
+        title: swaggerData.info?.title || "PDVAPI",
+        version: swaggerData.info?.version || "v1",
+        basePath: swaggerData.basePath || "/pdvapi",
+        totalEndpoints: endpointsList.length,
+        endpoints: endpointsList,
+        rawPaths: swaggerData.paths
+      };
+
+      res.json(cachedSwaggerDocs);
+    } catch (err: any) {
+      res.status(500).json({
+        error: "Falha ao obter Swagger da API PDV",
+        details: err.message
+      });
+    }
+  });
+
+  // 4. Endpoint de Puxada Total / Sync Completo da API ("Puxar tudo que pode puxar")
+  app.post("/api/pdv/sync-all", async (req, res) => {
+    const startTime = Date.now();
+    const results: Record<string, any> = {};
+    const errors: Record<string, string> = {};
+
+    let token = "";
+    try {
+      token = await getPdvAuthToken(false);
+    } catch (authErr: any) {
+      return res.status(401).json({
+        error: "Não foi possível autenticar na API PDV com o usuário HUGO ALVES",
+        details: authErr.message
+      });
+    }
+
+    const fetchEndpoint = async (key: string, endpointPath: string, timeoutMs = 8000) => {
+      const fullUrl = `${PDV_CONFIG.baseUrl.replace(/\/+$/, "")}${endpointPath}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const resp = await fetch(fullUrl, {
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Accept": "application/json"
+          },
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
+        if (resp.ok) {
+          const data = await resp.json();
+          results[key] = data;
+        } else {
+          errors[key] = `HTTP ${resp.status}: ${await resp.text().catch(() => resp.statusText)}`;
+        }
+      } catch (e: any) {
+        clearTimeout(timeout);
+        errors[key] = e.message;
+      }
+    };
+
+    // Execute in parallel batches for speed & reliability
+    console.log("[PDV Sync All] Iniciando puxada massiva de dados da API PDV...");
+
+    // Batch 1: Fast Structure Endpoints
+    await Promise.allSettled([
+      fetchEndpoint("lojas", "/api/public/lojas"),
+      fetchEndpoint("redes", "/api/public/redes"),
+      fetchEndpoint("vendedores", "/api/public/vendedores"),
+      fetchEndpoint("canaisVenda", "/api/public/RecursoInicial/CanaisDeVenda"),
+      fetchEndpoint("tiposDesconto", "/api/public/RecursoInicial/TiposDescontos"),
+      fetchEndpoint("tiposPessoa", "/api/public/RecursoInicial/Tipopessoa"),
+      fetchEndpoint("empresas", "/api/public/RecursoInicial/Empresas"),
+      fetchEndpoint("filial1", "/api/public/RecursoInicial/Filial/1"),
+      fetchEndpoint("tabelasPreco1", "/api/public/RecursoInicial/TabelasPreco/1"),
+      fetchEndpoint("cartoes1", "/api/public/RecursoInicial/Cartoes/1"),
+      fetchEndpoint("regrasAtivas1", "/api/public/RecursoInicial/RegrasAtivas/1"),
+      fetchEndpoint("vendedoresFilial1", "/api/public/RecursoInicial/Vendedores/1"),
+      fetchEndpoint("precosTabela1", "/api/public/precos/1"),
+      fetchEndpoint("variacoes", "/api/public/variacoes")
+    ]);
+
+    // Batch 2: Products and Sales with Pagination across Active Networks
+    await Promise.allSettled([
+      fetchEndpoint("produtosRedeMulti", "/api/public/produtos/2?pagina=1&tamanhoPagina=100"),
+      fetchEndpoint("produtosRedeAlmoxarifado", "/api/public/produtos/4?pagina=1&tamanhoPagina=50"),
+      fetchEndpoint("produtosRedeFluminense", "/api/public/produtos/9?pagina=1&tamanhoPagina=50"),
+      fetchEndpoint("produtosRedeFuttebol", "/api/public/produtos/14?pagina=1&tamanhoPagina=50"),
+      fetchEndpoint("vendasPorLoja", "/api/public/VendasPorLoja?data_inicio=2025-01-01&data_fim=2026-08-27&pagina=1&tamanho_pagina=50")
+    ]);
+
+    const durationMs = Date.now() - startTime;
+    lastPdvSyncTimestamp = new Date().toISOString();
+
+    // Extract standardized counts
+    const lojasList = results.lojas?.Registros || (Array.isArray(results.lojas) ? results.lojas : []);
+    const redesList = results.redes?.Registros || (Array.isArray(results.redes) ? results.redes : []);
+    const vendedoresList = results.vendedores?.Registros || (Array.isArray(results.vendedores) ? results.vendedores : []);
+    const produtosMulti = results.produtosRedeMulti?.Registros || [];
+    const produtosAlmox = results.produtosRedeAlmoxarifado?.Registros || [];
+    const produtosFlu = results.produtosRedeFluminense?.Registros || [];
+    const produtosFut = results.produtosRedeFuttebol?.Registros || [];
+    const allProdutos = [...produtosMulti, ...produtosAlmox, ...produtosFlu, ...produtosFut];
+    const variacoesList = results.variacoes?.Registros || (Array.isArray(results.variacoes) ? results.variacoes : []);
+    const vendasLojaList = results.vendasPorLoja?.lojas || [];
+
+    const summary = {
+      totalLojas: lojasList.length,
+      totalRedes: redesList.length,
+      totalVendedores: vendedoresList.length,
+      totalProdutosPuxados: allProdutos.length,
+      totalVariacoesPuxadas: variacoesList.length,
+      totalCanaisVenda: Array.isArray(results.canaisVenda) ? results.canaisVenda.length : 0,
+      totalTiposDesconto: Array.isArray(results.tiposDesconto) ? results.tiposDesconto.length : 0,
+      totalTiposPessoa: Array.isArray(results.tiposPessoa) ? results.tiposPessoa.length : 0,
+      totalCartoes: Array.isArray(results.cartoes1) ? results.cartoes1.length : 0,
+      totalRegrasAtivas: Array.isArray(results.regrasAtivas1) ? results.regrasAtivas1.length : 0,
+      totalTabelasPreco: Array.isArray(results.tabelasPreco1) ? results.tabelasPreco1.length : 0,
+      totalLojasComVenda: vendasLojaList.length,
+      endpointsSucesso: Object.keys(results).length,
+      endpointsErro: Object.keys(errors).length,
+      duracaoMs: durationMs
+    };
+
+    cachedFullPdvData = {
+      success: true,
+      timestamp: lastPdvSyncTimestamp,
+      usuario: PDV_CONFIG.usuario,
+      baseUrl: PDV_CONFIG.baseUrl,
+      summary,
+      results,
+      errors
+    };
+
+    console.log(`[PDV Sync All] Puxada concluída em ${durationMs}ms:`, summary);
+
+    res.json(cachedFullPdvData);
+  });
+
+  // 5. Endpoint para obter os dados cacheados da última puxada
+  app.get("/api/pdv/data", (req, res) => {
+    if (!cachedFullPdvData) {
+      return res.json({
+        hasData: false,
+        message: "Nenhuma sincronização completa realizada ainda. Execute POST /api/pdv/sync-all para puxar tudo da API."
+      });
+    }
+    res.json({
+      hasData: true,
+      ...cachedFullPdvData
+    });
+  });
+
+  // 6. Endpoint de Execução Dinâmica de Qualquer Endpoint Swagger ao vivo
+  app.post("/api/pdv/execute-endpoint", async (req, res) => {
+    const { path: endpointPath, method = "GET", params = {}, body } = req.body;
+    if (!endpointPath) {
+      return res.status(400).json({ error: "Campo 'path' é obrigatório." });
+    }
+
+    const startTime = Date.now();
+    let token = "";
+    try {
+      token = await getPdvAuthToken(false);
+    } catch (e: any) {
+      return res.status(401).json({ error: "Erro de autenticação PDV API", details: e.message });
+    }
+
+    // Replace path variables
+    let finalPath = endpointPath;
+    for (const [k, v] of Object.entries(params)) {
+      if (finalPath.includes(`{${k}}`)) {
+        finalPath = finalPath.replace(`{${k}}`, encodeURIComponent(String(v)));
+      }
+    }
+
+    // Append remaining query params for GET
+    const queryParams = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (!endpointPath.includes(`{${k}}`) && v !== undefined && v !== "") {
+        queryParams.append(k, String(v));
+      }
+    }
+    const queryString = queryParams.toString();
+    const urlWithQuery = `${PDV_CONFIG.baseUrl.replace(/\/+$/, "")}${finalPath}${queryString ? `?${queryString}` : ""}`;
+
+    try {
+      const fetchOpts: RequestInit = {
+        method: method.toUpperCase(),
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        }
+      };
+
+      if (method.toUpperCase() !== "GET" && method.toUpperCase() !== "HEAD" && body) {
+        fetchOpts.body = typeof body === "string" ? body : JSON.stringify(body);
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      fetchOpts.signal = controller.signal;
+
+      const response = await fetch(urlWithQuery, fetchOpts);
+      clearTimeout(timeout);
+      const durationMs = Date.now() - startTime;
+
+      const contentType = response.headers.get("content-type") || "";
+      let responseData: any;
+      if (contentType.includes("application/json")) {
+        responseData = await response.json();
+      } else {
+        responseData = await response.text();
+      }
+
+      res.json({
+        success: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        durationMs,
+        url: urlWithQuery,
+        method: method.toUpperCase(),
+        data: responseData
+      });
+    } catch (err: any) {
+      res.status(502).json({
+        success: false,
+        error: "Erro na execução do endpoint na API PDV",
+        details: err.message,
+        url: urlWithQuery
+      });
+    }
+  });
+
+  // 7. Proxy endpoint to forward general requests to the PDV API
   app.all("/api/pdv/proxy", async (req, res) => {
-    const targetBaseUrl = (req.headers["x-target-api-url"] as string) || "http://8c1a09f30719.sn.mynetname.net:65000/pdvapi";
+    const targetBaseUrl = (req.headers["x-target-api-url"] as string) || PDV_CONFIG.baseUrl;
     const endpointPath = (req.query.path as string) || "";
     const method = req.method;
 
@@ -494,17 +991,24 @@ async function startServer() {
     const cleanPath = endpointPath.startsWith("/") ? endpointPath : `/${endpointPath}`;
     const fullUrl = `${cleanBase}${cleanPath}`;
 
+    let token = "";
+    try {
+      token = (req.headers["authorization"] as string) || (await getPdvAuthToken(false));
+      if (token && !token.startsWith("Bearer ")) {
+        token = `Bearer ${token}`;
+      }
+    } catch {
+      // ignore
+    }
+
     try {
       const headersToSend: Record<string, string> = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": req.headers["content-type"] || "application/json",
       };
 
-      if (req.headers["authorization"]) {
-        headersToSend["Authorization"] = req.headers["authorization"] as string;
-      }
-      if (req.headers["x-api-key"]) {
-        headersToSend["x-api-key"] = req.headers["x-api-key"] as string;
+      if (token) {
+        headersToSend["Authorization"] = token;
       }
 
       const fetchOptions: RequestInit = {
@@ -517,7 +1021,7 @@ async function startServer() {
       }
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
       fetchOptions.signal = controller.signal;
 
       const response = await fetch(fullUrl, fetchOptions);

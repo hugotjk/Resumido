@@ -304,11 +304,59 @@ export interface SefazFaturamentoReport {
 
 export interface ApiConfig {
   baseUrl: string;
+  usuario?: string;
+  senha?: string;
   token?: string;
   apiKey?: string;
-  filialPadrao: string | number;
+  filialPadrao?: string | number;
   usarProxyLocal: boolean;
   timeoutMs: number;
   lastConnected?: string;
   statusConexao: 'ONLINE' | 'OFFLINE' | 'DEMO' | 'TESTANDO';
+}
+
+export interface PdvSwaggerEndpoint {
+  path: string;
+  method: string;
+  tags: string[];
+  summary: string;
+  operationId?: string;
+  parameters: Array<{
+    name: string;
+    in: 'query' | 'header' | 'path' | 'body';
+    required: boolean;
+    type?: string;
+    description?: string;
+    default?: any;
+    schema?: any;
+  }>;
+  responses: Record<string, any>;
+}
+
+export interface PdvSyncSummary {
+  totalLojas: number;
+  totalRedes: number;
+  totalVendedores: number;
+  totalProdutosPuxados: number;
+  totalVariacoesPuxadas: number;
+  totalCanaisVenda: number;
+  totalTiposDesconto: number;
+  totalTiposPessoa: number;
+  totalCartoes: number;
+  totalRegrasAtivas: number;
+  totalTabelasPreco: number;
+  totalLojasComVenda: number;
+  endpointsSucesso: number;
+  endpointsErro: number;
+  duracaoMs: number;
+}
+
+export interface PdvSyncData {
+  success: boolean;
+  timestamp: string;
+  usuario: string;
+  baseUrl: string;
+  summary: PdvSyncSummary;
+  results: Record<string, any>;
+  errors: Record<string, string>;
 }

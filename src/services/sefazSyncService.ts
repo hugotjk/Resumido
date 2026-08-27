@@ -94,6 +94,19 @@ export class SefazSyncService {
 
     const certObj = parsed.certificate;
 
+    // Save session credentials in sessionStorage for uninterrupted mTLS queries
+    const cleanCnpj = certObj.cnpj.replace(/\D/g, '');
+    try {
+      sessionStorage.setItem(`SEFAZ_SESSION_${cleanCnpj}`, JSON.stringify({
+        pfxBase64: parsed.pfxBase64,
+        password,
+        uf,
+        ambiente
+      }));
+    } catch {
+      // ignore
+    }
+
     // 2. Transmit to server to store mTLS session in certificateSessions map
     try {
       await fetch('/api/sefaz/certificate/verify', {
@@ -224,15 +237,32 @@ export class SefazSyncService {
     newInvoices: SefazInvoice[];
     rawXmls: Array<{ nsu: string; schema: string; xml: string }>;
   }> {
+    const cleanCnpj = params.cnpj.replace(/\D/g, '');
+    let sessionData: any = null;
+    try {
+      const raw = sessionStorage.getItem(`SEFAZ_SESSION_${cleanCnpj}`);
+      if (raw) sessionData = JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+
+    const payload: any = {
+      ...params,
+      pfxBase64: sessionData?.pfxBase64,
+      password: sessionData?.password,
+      uf: params.uf || sessionData?.uf || 'SP',
+      ambiente: params.ambiente || sessionData?.ambiente || 'PRODUCAO'
+    };
+
     const res = await fetch('/api/sefaz/distribuicao-dfe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params)
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || `Erro HTTP ${res.status} ao consultar SEFAZ.`);
+      throw new Error(errData.error || `Erro de comunicação com o servidor (${res.status}).`);
     }
 
     const data = await res.json();
