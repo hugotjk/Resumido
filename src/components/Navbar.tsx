@@ -64,23 +64,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="font-bold text-emerald-800 uppercase">CENTRAL FIRESTORE</span>
             </div>
 
-            {/* Certificate Indicator Button */}
-            <button
-              id="navbar-cert-badge"
-              onClick={onNavigateToCertificate}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-sm border text-[10px] transition ${
-                activeCertificate
-                  ? 'bg-[#141414] text-[#E4E3E0] border-[#141414] hover:bg-[#2c2c2c]'
-                  : 'bg-amber-100 text-amber-900 border-amber-400 hover:bg-amber-200'
-              }`}
-              title={activeCertificate ? `Certificado ativo: ${activeCertificate.razaoSocial} (${activeCertificate.cnpj})` : 'Clique para vincular Certificado Digital A1'}
-            >
-              <KeyRound className={`w-3.5 h-3.5 ${activeCertificate ? 'text-emerald-400' : 'text-amber-700'}`} />
-              <span className="font-bold uppercase">
-                {activeCertificate ? `A1: ${activeCertificate.cnpj} (${activeCertificate.diasRestantes}d)` : 'SEM CERTIFICADO A1'}
-              </span>
-            </button>
-
             {/* API Status */}
             <div className="flex items-center space-x-1.5 bg-[#E4E3E0] px-2.5 py-1 rounded-sm border border-[#141414] text-[10px]">
               <Globe className="w-3.5 h-3.5 text-[#141414]" />

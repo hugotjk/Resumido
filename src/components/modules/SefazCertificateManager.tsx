@@ -351,7 +351,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
         {/* Global Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Hidden File Input for Batch XML/ZIP */}
+          {/* Hidden File Input for Batch XML/ZIP (kept for background execution if needed) */}
           <input
             type="file"
             ref={xmlBatchInputRef}
@@ -360,16 +360,6 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
             accept=".xml,.zip,.txt"
             className="hidden"
           />
-
-          <button
-            onClick={() => xmlBatchInputRef.current?.click()}
-            disabled={isImportingFiles}
-            className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center space-x-1.5 border border-[#141414] disabled:opacity-50"
-            title="Importar arquivos .xml ou arquivo .zip do computador"
-          >
-            <UploadCloud className="w-3.5 h-3.5" />
-            <span>{isImportingFiles ? 'Importando...' : 'Importar XML / ZIP'}</span>
-          </button>
 
           <button
             onClick={handleDownloadAllZip}
@@ -581,20 +571,11 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
               <div className="p-10 text-center space-y-3">
                 <FileCode className="w-10 h-10 mx-auto text-[#141414]/40" />
                 <h4 className="text-xs font-bold uppercase text-[#141414]">
-                  Nenhum XML de NF-e encontrado no banco
+                  Nenhum XML de NF-e registrado no banco
                 </h4>
                 <p className="text-[11px] text-[#141414]/70 max-w-md mx-auto font-sans">
-                  Você pode puxar notas fiscais diretamente da SEFAZ usando seu Certificado A1 ou clicar no botão <strong>"Importar XML / ZIP"</strong> acima para carregar notas do seu computador.
+                  Execute a sincronização oficial acima para buscar todos os XMLs e notas fiscais diretamente dos servidores da SEFAZ Nacional.
                 </p>
-                <div className="pt-2">
-                  <button
-                    onClick={() => xmlBatchInputRef.current?.click()}
-                    className="px-3.5 py-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] text-xs font-bold uppercase rounded-sm inline-flex items-center space-x-1.5"
-                  >
-                    <UploadCloud className="w-3.5 h-3.5" />
-                    <span>Selecionar Arquivos XML / ZIP</span>
-                  </button>
-                </div>
               </div>
             ) : (
               <div className="overflow-x-auto">
