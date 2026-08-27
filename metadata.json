@@ -1,0 +1,6 @@
+{
+  "name": "Gestão PDV & Conferência SEFAZ",
+  "description": "Aplicativo para conferência de Markup (MKP), validação de notas fiscais SEFAZ, cadastro de produtos, sincronização de EAN, conferência de prazos e relatórios gerenciais integrado à API PDV.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "Certificate": {
+      "title": "Certificado Digital A1",
+      "description": "Certificados digitais cadastrados e ativos no sistema",
+      "properties": {
+        "cnpj": { "type": "string", "description": "CNPJ do titular" },
+        "razaoSocial": { "type": "string", "description": "Razão social da empresa" },
+        "emissor": { "type": "string", "description": "Autoridade Certificadora" },
+        "numeroSerie": { "type": "string", "description": "Número de série" },
+        "validadeInicio": { "type": "string", "description": "Início da validade" },
+        "validadeFim": { "type": "string", "description": "Fim da validade" },
+        "diasRestantes": { "type": "number", "description": "Dias restantes" },
+        "status": { "type": "string", "description": "Status do certificado" },
+        "uf": { "type": "string", "description": "UF" },
+        "ambiente": { "type": "string", "description": "Ambiente" },
+        "updatedAt": { "type": "string", "description": "Data de atualização" }
+      },
+      "required": ["cnpj", "razaoSocial"]
+    },
+    "Invoice": {
+      "title": "Nota Fiscal Eletrônica",
+      "description": "NF-e e NFC-e sincronizadas e persistidas",
+      "properties": {
+        "id": { "type": "string", "description": "ID único da nota" },
+        "chaveAcesso": { "type": "string", "description": "Chave de 44 dígitos" },
+        "numero": { "type": "string", "description": "Número da NF-e" },
+        "serie": { "type": "string", "description": "Série" },
+        "dataEmissao": { "type": "string", "description": "Data de emissão" },
+        "naturezaOperacao": { "type": "string", "description": "Natureza de operação" },
+        "tipoOperacao": { "type": "string", "description": "0=Entrada, 1=Saída" },
+        "emitente": { "type": "object", "description": "Dados do emitente" },
+        "destinatario": { "type": "object", "description": "Dados do destinatário" },
+        "itens": { "type": "array", "description": "Itens da nota" },
+        "totais": { "type": "object", "description": "Valores totais" },
+        "cobranca": { "type": "object", "description": "Duplicatas e prazos" },
+        "statusConferencia": { "type": "string", "description": "Status de conferência" },
+        "updatedAt": { "type": "string", "description": "Data de sincronização" }
+      },
+      "required": ["chaveAcesso", "numero"]
+    },
+    "FaturamentoCache": {
+      "title": "Cache de Faturamento SEFAZ",
+      "description": "Relatórios consolidados de faturamento SEFAZ",
+      "properties": {
+        "cnpj": { "type": "string", "description": "CNPJ" },
+        "totalVendasFaturadas": { "type": "number", "description": "Total de vendas" },
+        "totalComprasFornecedores": { "type": "number", "description": "Total de compras" },
+        "totalNotasEmitidas": { "type": "number", "description": "Quantidade emitidas" },
+        "totalNotasRecebidas": { "type": "number", "description": "Quantidade recebidas" },
+        "impostosTotais": { "type": "object", "description": "Resumo de impostos" },
+        "updatedAt": { "type": "string", "description": "Data de geração" }
+      },
+      "required": ["cnpj"]
+    },
+    "PdvProduct": {
+      "title": "Produto PDV",
+      "description": "Catálogo de produtos do PDV e estoque",
+      "properties": {
+        "id": { "type": "string", "description": "Código do produto" },
+        "codProd": { "type": "string", "description": "Código interno" },
+        "descricao": { "type": "string", "description": "Descrição do produto" },
+        "ean": { "type": "string", "description": "Código de barras EAN" },
+        "ncm": { "type": "string", "description": "NCM fiscal" },
+        "precoVenda": { "type": "number", "description": "Preço de venda atual" },
+        "precoCusto": { "type": "number", "description": "Preço de custo" },
+        "estoque": { "type": "number", "description": "Quantidade em estoque" },
+        "secao": { "type": "string", "description": "Departamento/Seção" },
+        "updatedAt": { "type": "string", "description": "Data de alteração" }
+      },
+      "required": ["id", "descricao"]
+    },
+    "SystemConfig": {
+      "title": "Configurações do Sistema",
+      "description": "Parâmetros de markup, margens e integração de API",
+      "properties": {
+        "mkpConfig": { "type": "object", "description": "Regras de markup" },
+        "apiConfig": { "type": "object", "description": "Credenciais da API PDV" },
+        "updatedAt": { "type": "string", "description": "Data de alteração" }
+      }
+    }
+  }
+}
