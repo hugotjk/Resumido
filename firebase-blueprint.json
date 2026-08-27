@@ -29,15 +29,55 @@
         "dataEmissao": { "type": "string", "description": "Data de emissão" },
         "naturezaOperacao": { "type": "string", "description": "Natureza de operação" },
         "tipoOperacao": { "type": "string", "description": "0=Entrada, 1=Saída" },
+        "statusNota": { "type": "string", "description": "AUTORIZADA, CANCELADA, DENEGADA" },
+        "temCartaCorrecao": { "type": "boolean", "description": "Indica se tem CC-e" },
+        "totalCartasCorrecao": { "type": "number", "description": "Quantidade de CC-e" },
+        "cartasCorrecao": { "type": "array", "description": "Lista de cartas de correção" },
+        "cancelamento": { "type": "object", "description": "Dados do cancelamento" },
         "emitente": { "type": "object", "description": "Dados do emitente" },
         "destinatario": { "type": "object", "description": "Dados do destinatário" },
         "itens": { "type": "array", "description": "Itens da nota" },
         "totais": { "type": "object", "description": "Valores totais" },
         "cobranca": { "type": "object", "description": "Duplicatas e prazos" },
         "statusConferencia": { "type": "string", "description": "Status de conferência" },
+        "nsu": { "type": "string", "description": "NSU da SEFAZ" },
         "updatedAt": { "type": "string", "description": "Data de sincronização" }
       },
       "required": ["chaveAcesso", "numero"]
+    },
+    "FiscalEvent": {
+      "title": "Evento Fiscal SEFAZ",
+      "description": "Cartas de Correção, Cancelamentos, Manifestações e EPEC",
+      "properties": {
+        "id": { "type": "string", "description": "ID único do evento" },
+        "nsu": { "type": "string", "description": "NSU na SEFAZ" },
+        "chaveAcesso": { "type": "string", "description": "Chave da NF-e vinculada" },
+        "tipoEvento": { "type": "string", "description": "CCE, CANCELAMENTO, MANIFESTACAO, OUTRO" },
+        "tpEventoCodigo": { "type": "string", "description": "Código numérico do evento (ex: 110110, 110111)" },
+        "descricaoEvento": { "type": "string", "description": "Descrição amigável do evento" },
+        "nSeqEvento": { "type": "number", "description": "Sequencial do evento" },
+        "dataHoraEvento": { "type": "string", "description": "Data e hora do evento" },
+        "protocolo": { "type": "string", "description": "Número do protocolo" },
+        "detalhes": { "type": "object", "description": "Texto da correção ou justificativa" },
+        "cnpjInteressado": { "type": "string", "description": "CNPJ do destinatário/autor" },
+        "updatedAt": { "type": "string", "description": "Data de persistência" }
+      },
+      "required": ["nsu", "chaveAcesso", "tipoEvento"]
+    },
+    "SefazSyncState": {
+      "title": "Estado do NSU e Sincronização SEFAZ",
+      "description": "Controle de último NSU consultado por CNPJ",
+      "properties": {
+        "cnpj": { "type": "string", "description": "CNPJ da empresa" },
+        "ultimoNSUSincronizado": { "type": "string", "description": "Último NSU persistido no banco" },
+        "maxNSUSefaz": { "type": "string", "description": "Maior NSU disponível na SEFAZ" },
+        "totalDocumentosSincronizados": { "type": "number", "description": "Total de documentos no banco" },
+        "totalEventosSincronizados": { "type": "number", "description": "Total de eventos fiscais" },
+        "ultimaConsultaEm": { "type": "string", "description": "Data/hora da última sincronização" },
+        "statusSincronizacao": { "type": "string", "description": "SINCRONIZADO, PENDENTE, ERRO" },
+        "mensagemStatus": { "type": "string", "description": "Detalhes da última requisição" }
+      },
+      "required": ["cnpj", "ultimoNSUSincronizado"]
     },
     "FaturamentoCache": {
       "title": "Cache de Faturamento SEFAZ",

@@ -264,6 +264,10 @@ export class SefazXmlParser {
           vST: Number(vSTTotal.toFixed(2)),
           vNF: Number(vNFTotal.toFixed(2))
         },
+        statusNota: 'AUTORIZADA',
+        temCartaCorrecao: false,
+        totalCartasCorrecao: 0,
+        cartasCorrecao: [],
         itens,
         duplicatas,
         pagamentos,
@@ -276,6 +280,282 @@ export class SefazXmlParser {
       console.error("Error parsing SEFAZ XML:", err);
       return null;
     }
+  }
+
+  /**
+   * Parses resNFe (Resumo de NF-e retornado na distribuição de DFe)
+   */
+  public static parseResNFe(xmlContent: string, nsu?: string): SefazInvoice | null {
+    try {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlContent, "text/xml");
+      const resNFe = xmlDoc.querySelector("resNFe");
+      if (!resNFe) return null;
+
+      const chNFe = resNFe.querySelector("chNFe")?.textContent || "";
+      if (!chNFe) return null;
+
+      const emitCnpj = resNFe.querySelector("CNPJ")?.textContent || resNFe.querySelector("CPF")?.textContent || "";
+      const emitNome = resNFe.querySelector("xNome")?.textContent || "EMITENTE SEFAZ (RESUMO)";
+      const emitIE = resNFe.querySelector("IE")?.textContent || "";
+      const dhEmi = resNFe.querySelector("dhEmi")?.textContent || resNFe.querySelector("dEmi")?.textContent || new Date().toISOString();
+      const tpNF = resNFe.querySelector("tpNF")?.textContent || "1";
+      const vNF = parseFloat(resNFe.querySelector("vNF")?.textContent || "0");
+      const cSitNFe = resNFe.querySelector("cSitNFe")?.textContent || "1"; // 1=Autorizada, 2=Denegada, 3=Cancelada
+
+      let statusNota: 'AUTORIZADA' | 'CANCELADA' | 'DENEGADA' = 'AUTORIZADA';
+      if (cSitNFe === "2") statusNota = 'DENEGADA';
+      if (cSitNFe === "3") statusNota = 'CANCELADA';
+
+      // Extract number & serie from 44-digit key if available
+      // Pos 25-31: Serie (3 digits), Pos 26-34: Número (9 digits)
+      let numero = "1";
+      let serie = "1";
+      if (chNFe.length === 44) {
+        serie = parseInt(chNFe.substring(22, 25), 10).toString();
+        numero = parseInt(chNFe.substring(25, 34), 10).toString();
+      }
+
+      return {
+        id: `NFE-${chNFe}`,
+        chaveAcesso: chNFe,
+        numero,
+        serie,
+        tipoOperacao: tpNF === "0" ? "ENTRADA" : "SAIDA",
+        statusNota,
+        temCartaCorrecao: false,
+        totalCartasCorrecao: 0,
+        cartasCorrecao: [],
+        dataEmissao: dhEmi,
+        nsu: nsu || "",
+        emitente: {
+          cnpj: emitCnpj,
+          xNome: emitNome,
+          ie: emitIE,
+          uf: "SP"
+        },
+        destinatario: {
+          cnpj: "",
+          xNome: "DESTINATÁRIO"
+        },
+        totais: {
+          vProd: vNF,
+          vFrete: 0,
+          vSeg: 0,
+          vDesc: 0,
+          vOutro: 0,
+          vIPI: 0,
+          vST: 0,
+          vNF: vNF
+        },
+        itens: [],
+        duplicatas: [],
+        pagamentos: [],
+        condicaoPagamentoDeclarada: "Resumo SEFAZ (resNFe)",
+        prazoMedioDias: 0,
+        xmlRaw: xmlContent,
+        xmlOriginal: xmlContent
+      };
+    } catch (err) {
+      console.warn("Error parsing resNFe:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Parses Fiscal Events from SEFAZ:
+   * - 110110: Carta de Correção Eletrônica (CC-e)
+   * - 110111: Cancelamento de NF-e
+   * - 110112: Cancelamento por Substituição
+   * - 210200 / 210210 / 210220 / 210240: Manifestações
+   */
+  public static parseFiscalEvent(xmlContent: string, nsu?: string): import('../types').SefazFiscalEvent | null {
+    try {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlContent, "text/xml");
+
+      const evento = xmlDoc.querySelector("evento") || xmlDoc.querySelector("procEventoNFe") || xmlDoc.querySelector("resEvento") || xmlDoc.documentElement;
+      if (!evento) return null;
+
+      const infEvento = xmlDoc.querySelector("infEvento") || evento;
+      const chNFe = infEvento.querySelector("chNFe")?.textContent || xmlDoc.querySelector("chNFe")?.textContent || "";
+      if (!chNFe) return null;
+
+      const tpEvento = infEvento.querySelector("tpEvento")?.textContent || "";
+      const nSeqEvento = parseInt(infEvento.querySelector("nSeqEvento")?.textContent || "1", 10);
+      const dhEvento = infEvento.querySelector("dhEvento")?.textContent || infEvento.querySelector("dhRecbto")?.textContent || new Date().toISOString();
+      const xEvento = infEvento.querySelector("xEvento")?.textContent || "";
+      const nProt = xmlDoc.querySelector("retEvento nProt")?.textContent || xmlDoc.querySelector("nProt")?.textContent || infEvento.querySelector("nProt")?.textContent || "";
+      const cnpjInteressado = infEvento.querySelector("CNPJ")?.textContent || infEvento.querySelector("CPF")?.textContent || "";
+
+      // Event-specific details
+      const detEvento = xmlDoc.querySelector("detEvento");
+      const xCorrecao = detEvento?.querySelector("xCorrecao")?.textContent || "";
+      const xJust = detEvento?.querySelector("xJust")?.textContent || detEvento?.querySelector("xJustificativa")?.textContent || "";
+      const xCondUso = detEvento?.querySelector("xCondUso")?.textContent || "";
+
+      let tipoEvento: 'CCE' | 'CANCELAMENTO' | 'MANIFESTACAO' | 'EPEC' | 'OUTRO' = 'OUTRO';
+      let descricaoEvento = xEvento || 'Evento Fiscal SEFAZ';
+
+      if (tpEvento === '110110' || xEvento.toLowerCase().includes('correcao') || xCorrecao) {
+        tipoEvento = 'CCE';
+        descricaoEvento = `Carta de Correção Eletrônica (Seq #${nSeqEvento})`;
+      } else if (tpEvento === '110111' || tpEvento === '110112' || xEvento.toLowerCase().includes('cancelamento')) {
+        tipoEvento = 'CANCELAMENTO';
+        descricaoEvento = 'Cancelamento de NF-e Homologado';
+      } else if (tpEvento.startsWith('210')) {
+        tipoEvento = 'MANIFESTACAO';
+        descricaoEvento = xEvento || 'Manifestação do Destinatário';
+      } else if (tpEvento === '110140') {
+        tipoEvento = 'EPEC';
+        descricaoEvento = 'EPEC - Emissão Prévia em Contingência';
+      }
+
+      const eventId = `EVT-${chNFe}-${tpEvento}-${nSeqEvento}-${nsu || Date.now()}`;
+
+      return {
+        id: eventId,
+        nsu: nsu || "",
+        chaveAcesso: chNFe,
+        tipoEvento,
+        tpEventoCodigo: tpEvento,
+        descricaoEvento,
+        nSeqEvento,
+        dataHoraEvento: dhEvento,
+        protocolo: nProt,
+        detalhes: {
+          xCorrecao: xCorrecao || undefined,
+          xJustificativa: xJust || undefined,
+          xCondUso: xCondUso || undefined
+        },
+        cnpjInteressado: cnpjInteressado || undefined,
+        xmlRaw: xmlContent,
+        createdAt: new Date().toISOString()
+      };
+    } catch (err) {
+      console.warn("Error parsing fiscal event XML:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Applies an event (CC-e, Cancelamento, etc.) onto a SefazInvoice
+   */
+  public static applyEventToInvoice(invoice: SefazInvoice, event: import('../types').SefazFiscalEvent): SefazInvoice {
+    const updated = { ...invoice };
+
+    if (!updated.eventosFiscais) {
+      updated.eventosFiscais = [];
+    }
+
+    // Avoid duplicate event entries by id
+    const existingEvtIndex = updated.eventosFiscais.findIndex(e => e.id === event.id || (e.tpEventoCodigo === event.tpEventoCodigo && e.nSeqEvento === event.nSeqEvento));
+    if (existingEvtIndex >= 0) {
+      updated.eventosFiscais[existingEvtIndex] = event;
+    } else {
+      updated.eventosFiscais.push(event);
+    }
+
+    // Handle CC-e (Carta de Correção)
+    if (event.tipoEvento === 'CCE') {
+      updated.temCartaCorrecao = true;
+      if (!updated.cartasCorrecao) updated.cartasCorrecao = [];
+      
+      const cceEntry = {
+        nSeqEvento: event.nSeqEvento,
+        dhEvento: event.dataHoraEvento,
+        xCorrecao: event.detalhes?.xCorrecao || 'Correção registrada na SEFAZ',
+        nProt: event.protocolo
+      };
+
+      const cceIdx = updated.cartasCorrecao.findIndex(c => c.nSeqEvento === event.nSeqEvento);
+      if (cceIdx >= 0) {
+        updated.cartasCorrecao[cceIdx] = cceEntry;
+      } else {
+        updated.cartasCorrecao.push(cceEntry);
+      }
+      updated.totalCartasCorrecao = updated.cartasCorrecao.length;
+    }
+
+    // Handle Cancelamento
+    if (event.tipoEvento === 'CANCELAMENTO') {
+      updated.statusNota = 'CANCELADA';
+      updated.cancelamento = {
+        dhEvento: event.dataHoraEvento,
+        nProt: event.protocolo || '',
+        xJust: event.detalhes?.xJustificativa || 'Cancelamento homologado pela SEFAZ'
+      };
+    }
+
+    updated.updatedAt = new Date().toISOString();
+    return updated;
+  }
+
+  /**
+   * Universal document parser dispatcher for SEFAZ distribution feed
+   */
+  public static parseDocument(
+    xmlContent: string, 
+    schema: string = "", 
+    nsu: string = "", 
+    pdvProducts: PdvProduct[] = [], 
+    mkpConfig?: MkpConfig
+  ): {
+    type: 'NFE' | 'EVENTO' | 'RESUMO_NFE' | 'DESCONHECIDO';
+    invoice?: SefazInvoice;
+    event?: import('../types').SefazFiscalEvent;
+  } {
+    if (!xmlContent) return { type: 'DESCONHECIDO' };
+
+    // Check if it is an event
+    if (
+      schema.includes('Evento') || 
+      schema.includes('resEvento') || 
+      xmlContent.includes('<procEventoNFe') || 
+      xmlContent.includes('<resEvento') || 
+      xmlContent.includes('<tpEvento>')
+    ) {
+      const event = this.parseFiscalEvent(xmlContent, nsu);
+      if (event) {
+        return { type: 'EVENTO', event };
+      }
+    }
+
+    // Check if it is a full NF-e
+    if (
+      schema.includes('procNFe') || 
+      xmlContent.includes('<infNFe') || 
+      xmlContent.includes('<NFe>') ||
+      xmlContent.includes('<nfeProc')
+    ) {
+      const invoice = this.parseXml(xmlContent, pdvProducts, mkpConfig);
+      if (invoice) {
+        if (nsu) invoice.nsu = nsu;
+        return { type: 'NFE', invoice };
+      }
+    }
+
+    // Check if it is a resNFe (resumo)
+    if (schema.includes('resNFe') || xmlContent.includes('<resNFe')) {
+      const invoice = this.parseResNFe(xmlContent, nsu);
+      if (invoice) {
+        return { type: 'RESUMO_NFE', invoice };
+      }
+    }
+
+    // Fallback: try parsing as NF-e first, then event
+    const fallbackNfe = this.parseXml(xmlContent, pdvProducts, mkpConfig);
+    if (fallbackNfe) {
+      if (nsu) fallbackNfe.nsu = nsu;
+      return { type: 'NFE', invoice: fallbackNfe };
+    }
+
+    const fallbackEvt = this.parseFiscalEvent(xmlContent, nsu);
+    if (fallbackEvt) {
+      return { type: 'EVENTO', event: fallbackEvt };
+    }
+
+    return { type: 'DESCONHECIDO' };
   }
 
   public static parseXmlString(xmlContent: string, pdvProducts: PdvProduct[] = [], mkpConfig?: MkpConfig): SefazInvoice {

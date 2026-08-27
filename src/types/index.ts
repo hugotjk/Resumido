@@ -81,6 +81,41 @@ export interface SefazItem {
   statusMkp?: 'ABAIXO_META' | 'NA_META' | 'ACIMA_META' | 'PREJUIZO';
 }
 
+export interface SefazFiscalEvent {
+  id: string;
+  nsu: string;
+  chaveAcesso: string;
+  tipoEvento: 'CCE' | 'CANCELAMENTO' | 'MANIFESTACAO' | 'EPEC' | 'OUTRO';
+  tpEventoCodigo: string; // "110110" (CCE), "110111" (Cancelamento), "210200" (Confirmação), etc.
+  descricaoEvento: string;
+  nSeqEvento: number;
+  dataHoraEvento: string;
+  protocolo?: string;
+  detalhes?: {
+    xCorrecao?: string; // Texto da Carta de Correção
+    xJustificativa?: string; // Motivo do cancelamento
+    xCondUso?: string;
+    tpAutor?: string;
+    verAplic?: string;
+  };
+  cnpjInteressado?: string;
+  xmlRaw?: string;
+  createdAt?: string;
+}
+
+export interface SefazNsuSyncState {
+  cnpj: string;
+  ultimoNSUSincronizado: string;
+  maxNSUSefaz: string;
+  totalDocumentosSincronizados: number;
+  totalEventosSincronizados: number;
+  totalCartasCorrecao?: number;
+  totalCancelamentos?: number;
+  ultimaConsultaEm: string;
+  statusSincronizacao: 'SINCRONIZADO' | 'PENDENTE' | 'ERRO';
+  mensagemStatus?: string;
+}
+
 export interface SefazInvoice {
   id: string;
   chaveAcesso: string;
@@ -88,6 +123,23 @@ export interface SefazInvoice {
   serie: string;
   dataEmissao: string; // ISO date
   tipoOperacao?: 'ENTRADA' | 'SAIDA';
+  statusNota?: 'AUTORIZADA' | 'CANCELADA' | 'DENEGADA';
+  temCartaCorrecao?: boolean;
+  totalCartasCorrecao?: number;
+  cartasCorrecao?: Array<{
+    nSeqEvento: number;
+    dhEvento: string;
+    xCorrecao: string;
+    nProt?: string;
+  }>;
+  cancelamento?: {
+    dhEvento: string;
+    nProt: string;
+    xJust?: string;
+  };
+  eventosFiscais?: SefazFiscalEvent[];
+  nsu?: string;
+  schema?: string;
   emitente: {
     cnpj: string;
     xNome: string;
@@ -120,6 +172,7 @@ export interface SefazInvoice {
   xmlRaw?: string;
   xmlOriginal?: string;
   fileName?: string;
+  updatedAt?: string;
 }
 
 export interface MkpConfig {

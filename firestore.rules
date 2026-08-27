@@ -31,6 +31,18 @@ service cloud.firestore {
       allow write: if true;
     }
 
+    // Fiscal events (Cartas de Correção, Cancelamentos, Manifestações)
+    match /fiscal_events/{eventId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // SEFAZ NSU sync state tracking
+    match /sefaz_sync_state/{stateId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
     // System configuration (MKP rules, general settings)
     match /system_config/{configId} {
       allow read: if true;
