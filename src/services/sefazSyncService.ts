@@ -5,8 +5,29 @@ import { SefazXmlParser } from './sefazParser';
 import { FirestoreDbService } from './firestoreDbService';
 
 const CERT_STORAGE_KEY = 'sefaz_active_certificate_v1';
+const CERTS_LIST_KEY = 'sefaz_certificates_list_v1';
 
 export class SefazSyncService {
+
+  public static async getAllCertificates(): Promise<SefazCertificate[]> {
+    try {
+      const cloudCerts = await FirestoreDbService.getAllCertificates();
+      if (cloudCerts && cloudCerts.length > 0) {
+        localStorage.setItem(CERTS_LIST_KEY, JSON.stringify(cloudCerts));
+        return cloudCerts;
+      }
+    } catch {
+      // fallback to localStorage
+    }
+
+    try {
+      const raw = localStorage.getItem(CERTS_LIST_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+    return [];
+  }
 
   public static async getSavedCertificate(): Promise<SefazCertificate | null> {
     try {
@@ -35,15 +56,19 @@ export class SefazSyncService {
     return null;
   }
 
-  public static saveCertificate(cert: SefazCertificate | null): void {
+  public static async saveCertificate(cert: SefazCertificate): Promise<void> {
     try {
-      if (cert) {
-        localStorage.setItem(CERT_STORAGE_KEY, JSON.stringify(cert));
-        FirestoreDbService.saveActiveCertificate(cert);
-      } else {
-        localStorage.removeItem(CERT_STORAGE_KEY);
-        FirestoreDbService.removeActiveCertificate();
-      }
+      localStorage.setItem(CERT_STORAGE_KEY, JSON.stringify(cert));
+      
+      // Update in local list cache
+      const existingList = await this.getAllCertificates();
+      const cleanCnpj = cert.cnpj.replace(/\D/g, '');
+      const filtered = existingList.filter(c => c.cnpj.replace(/\D/g, '') !== cleanCnpj);
+      const updatedList = [cert, ...filtered];
+      localStorage.setItem(CERTS_LIST_KEY, JSON.stringify(updatedList));
+
+      // Persist in Cloud Firestore (separate document per CNPJ)
+      await FirestoreDbService.saveCertificate(cert);
     } catch {
       // ignore
     }
@@ -69,7 +94,7 @@ export class SefazSyncService {
 
     const certObj = parsed.certificate;
 
-    // 2. Transmit to server to store active mTLS session
+    // 2. Transmit to server to store mTLS session in certificateSessions map
     try {
       await fetch('/api/sefaz/certificate/verify', {
         method: 'POST',
@@ -86,20 +111,54 @@ export class SefazSyncService {
       console.warn('[SEFAZ Sync] Failed to sync cert to backend session:', err);
     }
 
-    this.saveCertificate(certObj);
+    // 3. Save certificate in multi-store list
+    await this.saveCertificate(certObj);
     return certObj;
   }
 
   /**
-   * Unlinks / removes active certificate
+   * Unlinks / removes a specific certificate by CNPJ or all
    */
-  public static async unlinkCertificate(): Promise<void> {
-    this.saveCertificate(null);
+  public static async removeCertificate(cnpj: string): Promise<void> {
     try {
-      await fetch('/api/sefaz/certificate/remove', { method: 'POST' });
+      const cleanCnpj = cnpj.replace(/\D/g, '');
+      await FirestoreDbService.deleteCertificate(cleanCnpj);
+      
+      const existingList = await this.getAllCertificates();
+      const updated = existingList.filter(c => c.cnpj.replace(/\D/g, '') !== cleanCnpj);
+      localStorage.setItem(CERTS_LIST_KEY, JSON.stringify(updated));
+
+      if (updated.length > 0) {
+        localStorage.setItem(CERT_STORAGE_KEY, JSON.stringify(updated[0]));
+      } else {
+        localStorage.removeItem(CERT_STORAGE_KEY);
+      }
+
+      await fetch('/api/sefaz/certificate/remove', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cnpj })
+      });
     } catch {
       // ignore
     }
+  }
+
+  public static async unlinkCertificate(): Promise<void> {
+    const cert = await this.getSavedCertificate();
+    if (cert) {
+      await this.removeCertificate(cert.cnpj);
+    } else {
+      localStorage.removeItem(CERT_STORAGE_KEY);
+      await FirestoreDbService.removeActiveCertificate();
+    }
+  }
+
+  /**
+   * Clears all invoices in Firestore and local state
+   */
+  public static async clearAllInvoices(): Promise<void> {
+    await FirestoreDbService.clearAllInvoices();
   }
 
   /**

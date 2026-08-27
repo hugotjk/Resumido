@@ -16,10 +16,10 @@ import { SefazCertificate, SefazInvoice, SefazFaturamentoReport, PdvProduct, Mkp
 export class FirestoreDbService {
   
   // ==========================================
-  // CERTIFICATES
+  // CERTIFICATES (Multi-Store / Multi-CNPJ)
   // ==========================================
   
-  public static async saveActiveCertificate(cert: SefazCertificate): Promise<void> {
+  public static async saveCertificate(cert: SefazCertificate): Promise<void> {
     try {
       const cleanCnpj = cert.cnpj.replace(/\D/g, '') || 'default_cert';
       const certRef = doc(db, 'certificates', cleanCnpj);
@@ -28,7 +28,7 @@ export class FirestoreDbService {
         updatedAt: new Date().toISOString()
       }, { merge: true });
 
-      // Mark as current active
+      // Also set as last active
       const activeRef = doc(db, 'system_config', 'active_certificate');
       await setDoc(activeRef, {
         activeCnpj: cleanCnpj,
@@ -40,6 +40,25 @@ export class FirestoreDbService {
     }
   }
 
+  public static async saveActiveCertificate(cert: SefazCertificate): Promise<void> {
+    return this.saveCertificate(cert);
+  }
+
+  public static async getAllCertificates(): Promise<SefazCertificate[]> {
+    try {
+      const certsColl = collection(db, 'certificates');
+      const snap = await getDocs(certsColl);
+      const list: SefazCertificate[] = [];
+      snap.forEach(docSnap => {
+        list.push(docSnap.data() as SefazCertificate);
+      });
+      return list;
+    } catch (err) {
+      console.warn('[Firestore] Failed to get all certificates:', err);
+      return [];
+    }
+  }
+
   public static async getActiveCertificate(): Promise<SefazCertificate | null> {
     try {
       const activeRef = doc(db, 'system_config', 'active_certificate');
@@ -48,10 +67,23 @@ export class FirestoreDbService {
         const data = snap.data();
         if (data.certificate) return data.certificate as SefazCertificate;
       }
+      // Fallback to first certificate if available
+      const all = await this.getAllCertificates();
+      if (all.length > 0) return all[0];
     } catch (err) {
       console.warn('[Firestore] Failed to get active certificate:', err);
     }
     return null;
+  }
+
+  public static async deleteCertificate(cnpj: string): Promise<void> {
+    try {
+      const cleanCnpj = cnpj.replace(/\D/g, '');
+      const certRef = doc(db, 'certificates', cleanCnpj);
+      await deleteDoc(certRef);
+    } catch (err) {
+      console.warn('[Firestore] Failed to delete certificate:', err);
+    }
   }
 
   public static async removeActiveCertificate(): Promise<void> {
@@ -90,16 +122,34 @@ export class FirestoreDbService {
   public static async getAllInvoices(): Promise<SefazInvoice[]> {
     try {
       const invoicesColl = collection(db, 'invoices');
-      const q = query(invoicesColl, limit(200));
+      const q = query(invoicesColl, limit(500));
       const snap = await getDocs(q);
       const list: SefazInvoice[] = [];
       snap.forEach(docSnap => {
-        list.push(docSnap.data() as SefazInvoice);
+        const data = docSnap.data() as SefazInvoice;
+        // Filter out legacy mock data if any
+        if (data && data.chaveAcesso) {
+          list.push(data);
+        }
       });
       return list;
     } catch (err) {
       console.warn('[Firestore] Failed to fetch invoices:', err);
       return [];
+    }
+  }
+
+  public static async clearAllInvoices(): Promise<void> {
+    try {
+      const invoicesColl = collection(db, 'invoices');
+      const snap = await getDocs(invoicesColl);
+      const batch = writeBatch(db);
+      snap.forEach(docSnap => {
+        batch.delete(docSnap.ref);
+      });
+      await batch.commit();
+    } catch (err) {
+      console.warn('[Firestore] Failed to clear all invoices:', err);
     }
   }
 

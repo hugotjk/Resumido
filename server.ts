@@ -5,7 +5,7 @@ import zlib from "zlib";
 import forge from "node-forge";
 import { createServer as createViteServer } from "vite";
 
-// In-memory active certificate state on server
+// In-memory certificate sessions map on server (supports multiple stores / CNPJs)
 interface ActiveCertSession {
   certificate: {
     fileName: string;
@@ -32,7 +32,8 @@ interface ActiveCertSession {
   keyPem: string;
 }
 
-let activeCertificateSession: ActiveCertSession | null = null;
+const certificateSessions = new Map<string, ActiveCertSession>();
+let lastActiveCnpj: string | null = null;
 
 const UF_IBGE_MAP: Record<string, string> = {
   AC: "12", AL: "27", AP: "16", AM: "13", BA: "29", CE: "23", DF: "53", ES: "32",
@@ -54,7 +55,8 @@ async function startServer() {
       status: "ok",
       timestamp: new Date().toISOString(),
       service: "SEFAZ-PDV-Consolidator",
-      hasCertificate: !!activeCertificateSession
+      hasCertificate: certificateSessions.size > 0,
+      totalCertificates: certificateSessions.size
     });
   });
 
@@ -209,19 +211,25 @@ async function startServer() {
         uploadedAt: new Date().toISOString()
       };
 
-      // Save session on server for mTLS calls
-      activeCertificateSession = {
+      const cleanCnpj = (extractedCnpj || formattedCnpj).replace(/\D/g, "");
+
+      // Save session in multi-cert map on server for mTLS calls
+      const sessionData: ActiveCertSession = {
         certificate: certificateMetadata,
         pfxBuffer: pfxRawBuffer,
         password,
         certPem,
         keyPem
       };
+      
+      certificateSessions.set(cleanCnpj, sessionData);
+      lastActiveCnpj = cleanCnpj;
 
       res.json({
         success: true,
-        message: "Certificado A1 validado e pronto para comunicação com a SEFAZ.",
-        certificate: certificateMetadata
+        message: `Certificado A1 de "${razaoSocial || formattedCnpj}" cadastrado com sucesso! Total no servidor: ${certificateSessions.size}.`,
+        certificate: certificateMetadata,
+        totalCertificates: certificateSessions.size
       });
     } catch (err: any) {
       console.error("[SEFAZ Cert] Error verifying certificate:", err);
@@ -232,28 +240,55 @@ async function startServer() {
     }
   });
 
-  // Certificate: Get Current Session Info
+  // Certificate: List All Server Sessions
+  app.get("/api/sefaz/certificates", (req, res) => {
+    const list = Array.from(certificateSessions.values()).map(s => s.certificate);
+    res.json({
+      total: list.length,
+      lastActiveCnpj,
+      certificates: list
+    });
+  });
+
+  // Certificate: Get Current / Specific Session Info
   app.get("/api/sefaz/certificate/current", (req, res) => {
-    if (!activeCertificateSession) {
+    const cnpj = req.query.cnpj ? String(req.query.cnpj).replace(/\D/g, "") : lastActiveCnpj;
+    const session = cnpj ? certificateSessions.get(cnpj) : (lastActiveCnpj ? certificateSessions.get(lastActiveCnpj) : null);
+    
+    if (!session) {
       return res.json({ active: false, certificate: null });
     }
     res.json({
       active: true,
-      certificate: activeCertificateSession.certificate
+      certificate: session.certificate
     });
   });
 
-  // Certificate: Remove Session
+  // Certificate: Remove Session (by specific CNPJ or all)
   app.post("/api/sefaz/certificate/remove", (req, res) => {
-    activeCertificateSession = null;
-    res.json({ success: true, message: "Certificado desvinculado com sucesso." });
+    const { cnpj } = req.body || {};
+    if (cnpj) {
+      const clean = String(cnpj).replace(/\D/g, "");
+      certificateSessions.delete(clean);
+      if (lastActiveCnpj === clean) {
+        lastActiveCnpj = certificateSessions.keys().next().value || null;
+      }
+      res.json({ success: true, message: `Certificado ${cnpj} desvinculado com sucesso.`, remaining: certificateSessions.size });
+    } else {
+      certificateSessions.clear();
+      lastActiveCnpj = null;
+      res.json({ success: true, message: "Todos os certificados foram desvinculados.", remaining: 0 });
+    }
   });
 
   // SEFAZ: Check Status Servico
   app.post("/api/sefaz/consultar-status", async (req, res) => {
-    const uf = req.body.uf || activeCertificateSession?.certificate.uf || "SP";
-    const ambiente = req.body.ambiente || activeCertificateSession?.certificate.ambiente || "PRODUCAO";
-    const hasCert = !!activeCertificateSession;
+    const customCnpj = req.body.cnpj ? String(req.body.cnpj).replace(/\D/g, "") : lastActiveCnpj;
+    const session = customCnpj ? certificateSessions.get(customCnpj) : (lastActiveCnpj ? certificateSessions.get(lastActiveCnpj) : null);
+    
+    const uf = req.body.uf || session?.certificate.uf || "SP";
+    const ambiente = req.body.ambiente || session?.certificate.ambiente || "PRODUCAO";
+    const hasCert = !!session;
     const wsUrl = `https://nfe.fazenda.${uf.toLowerCase()}.gov.br/ws/NFeStatusServico4.asmx`;
 
     const startTime = Date.now();
@@ -286,12 +321,17 @@ async function startServer() {
         chNFe 
       } = req.body;
 
-      const certInfo = activeCertificateSession?.certificate;
-      const rawCnpj = (customCnpj || certInfo?.cnpj || "").replace(/\D/g, "");
+      const rawCnpj = (customCnpj || "").replace(/\D/g, "");
+      const session = rawCnpj 
+        ? certificateSessions.get(rawCnpj) 
+        : (lastActiveCnpj ? certificateSessions.get(lastActiveCnpj) : null);
+
+      const certInfo = session?.certificate;
+      const targetCnpj = rawCnpj || certInfo?.cnpj?.replace(/\D/g, "") || "";
       const uf = customUf || certInfo?.uf || "SP";
       const ambiente = customAmbiente || certInfo?.ambiente || "PRODUCAO";
 
-      if (!rawCnpj || rawCnpj.length !== 14) {
+      if (!targetCnpj || targetCnpj.length !== 14) {
         return res.status(400).json({ error: "CNPJ válido de 14 dígitos é obrigatório para consulta na SEFAZ." });
       }
 
@@ -316,7 +356,7 @@ async function startServer() {
         <distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">
           <tpAmb>${tpAmb}</tpAmb>
           <cUFAutor>${cUFCode}</cUFAutor>
-          <CNPJ>${rawCnpj}</CNPJ>
+          <CNPJ>${targetCnpj}</CNPJ>
           ${queryNode}
         </distDFeInt>
       </nfeDadosMsg>
@@ -328,19 +368,19 @@ async function startServer() {
         ? "https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
         : "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
 
-      // Make mTLS HTTPS request if active cert session exists
+      // Make mTLS HTTPS request if session exists for this certificate
       let httpsAgent: https.Agent | undefined;
-      if (activeCertificateSession) {
-        if (activeCertificateSession.pfxBuffer) {
+      if (session) {
+        if (session.pfxBuffer) {
           httpsAgent = new https.Agent({
-            pfx: activeCertificateSession.pfxBuffer,
-            passphrase: activeCertificateSession.password,
+            pfx: session.pfxBuffer,
+            passphrase: session.password,
             rejectUnauthorized: false
           });
-        } else if (activeCertificateSession.certPem && activeCertificateSession.keyPem) {
+        } else if (session.certPem && session.keyPem) {
           httpsAgent = new https.Agent({
-            cert: activeCertificateSession.certPem,
-            key: activeCertificateSession.keyPem,
+            cert: session.certPem,
+            key: session.keyPem,
             rejectUnauthorized: false
           });
         }

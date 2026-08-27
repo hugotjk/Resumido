@@ -18,6 +18,7 @@ import { SefazSyncService } from './services/sefazSyncService';
 import { FirestoreDbService } from './services/firestoreDbService';
 
 export default function App() {
+  const [certificates, setCertificates] = useState<SefazCertificate[]>([]);
   const [activeCertificate, setActiveCertificate] = useState<SefazCertificate | null>(SefazSyncService.getSavedCertificateSync());
   const [activeTab, setActiveTab] = useState<TabType>('certificado');
   const [invoices, setInvoices] = useState<SefazInvoice[]>([]);
@@ -43,12 +44,13 @@ export default function App() {
   const loadInitialData = async () => {
     setIsLoading(true);
     try {
-      // 1. Fetch saved config and products from Cloud DB / Local
-      const [savedDbMkp, savedDbInvoices, savedDbProducts, savedCert] = await Promise.all([
+      // 1. Fetch saved config, certificates, and invoices from Cloud DB / Local
+      const [savedDbMkp, savedDbInvoices, savedDbProducts, savedCert, savedCertList] = await Promise.all([
         FirestoreDbService.getMkpConfig(),
         FirestoreDbService.getAllInvoices(),
         FirestoreDbService.getPdvProducts(),
-        SefazSyncService.getSavedCertificate()
+        SefazSyncService.getSavedCertificate(),
+        SefazSyncService.getAllCertificates()
       ]);
 
       if (savedDbMkp) setMkpConfig(savedDbMkp);
@@ -58,16 +60,24 @@ export default function App() {
       }
 
       // 2. Load persisted real invoices from database
-      if (savedDbInvoices && savedDbInvoices.length > 0) {
+      if (savedDbInvoices) {
         setInvoices(savedDbInvoices);
       }
 
-      // 3. Load active certificate
+      // 3. Load certificates list
+      if (savedCertList && savedCertList.length > 0) {
+        setCertificates(savedCertList);
+        if (!savedCert) {
+          setActiveCertificate(savedCertList[0]);
+        }
+      }
+
+      // 4. Load active certificate
       if (savedCert) {
         setActiveCertificate(savedCert);
       }
 
-      // 4. Test connectivity in background
+      // 5. Test connectivity in background
       PdvApiService.testConnection().then(() => {
         setApiConfig(PdvApiService.getConfig());
       });
@@ -81,14 +91,16 @@ export default function App() {
   const handleRefreshData = async () => {
     setIsLoading(true);
     try {
-      const [savedDbInvoices, savedDbProducts, savedCert] = await Promise.all([
+      const [savedDbInvoices, savedDbProducts, savedCert, savedCertList] = await Promise.all([
         FirestoreDbService.getAllInvoices(),
         FirestoreDbService.getPdvProducts(),
-        SefazSyncService.getSavedCertificate()
+        SefazSyncService.getSavedCertificate(),
+        SefazSyncService.getAllCertificates()
       ]);
 
       if (savedDbInvoices) setInvoices(savedDbInvoices);
       if (savedDbProducts) setPdvProducts(savedDbProducts);
+      if (savedCertList) setCertificates(savedCertList);
       if (savedCert) setActiveCertificate(savedCert);
       
       await PdvApiService.testConnection();
@@ -101,6 +113,11 @@ export default function App() {
   const handleUpdateInvoices = (newInvoices: SefazInvoice[]) => {
     setInvoices(newInvoices);
     FirestoreDbService.saveInvoices(newInvoices);
+  };
+
+  const handleClearAllInvoices = async () => {
+    await SefazSyncService.clearAllInvoices();
+    setInvoices([]);
   };
 
   return (
@@ -146,10 +163,13 @@ export default function App() {
               {/* PRIMARY FOCUS: SEFAZ XML HUB & DIGITAL CERTIFICATE */}
               {activeTab === 'certificado' && (
                 <SefazCertificateManager
+                  certificates={certificates}
                   activeCertificate={activeCertificate}
+                  onCertificatesChange={setCertificates}
                   onCertificateChange={setActiveCertificate}
                   invoices={invoices}
                   onInvoicesChange={handleUpdateInvoices}
+                  onClearAllInvoices={handleClearAllInvoices}
                 />
               )}
 

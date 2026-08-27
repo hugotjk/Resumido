@@ -27,26 +27,34 @@ import {
   Archive,
   FileText,
   AlertCircle,
-  HelpCircle
+  HelpCircle,
+  PlusCircle,
+  Store
 } from 'lucide-react';
 import { SefazCertificate, SefazInvoice } from '../../types';
 import { SefazSyncService } from '../../services/sefazSyncService';
 import { SefazXmlParser } from '../../services/sefazParser';
 
 interface SefazCertificateManagerProps {
+  certificates: SefazCertificate[];
   activeCertificate: SefazCertificate | null;
+  onCertificatesChange: (certs: SefazCertificate[]) => void;
   onCertificateChange: (cert: SefazCertificate | null) => void;
   invoices: SefazInvoice[];
   onInvoicesChange: (invoices: SefazInvoice[]) => void;
+  onClearAllInvoices?: () => void;
 }
 
 export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = ({
+  certificates = [],
   activeCertificate,
+  onCertificatesChange,
   onCertificateChange,
-  invoices,
-  onInvoicesChange
+  invoices = [],
+  onInvoicesChange,
+  onClearAllInvoices
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'xmls' | 'certificado' | 'status_sefaz'>('xmls');
+  const [activeSubTab, setActiveSubTab] = useState<'xmls' | 'certificados' | 'status_sefaz'>('xmls');
   
   // Form states for Certificate
   const [selectedCertFile, setSelectedCertFile] = useState<File | null>(null);
@@ -58,14 +66,16 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
   // Status & Feedback states
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSyncingSefaz, setIsSyncingSefaz] = useState<boolean>(false);
-  const [isImportingFiles, setIsImportingFiles] = useState<boolean>(false);
+  const [isSyncingAll, setIsSyncingAll] = useState<boolean>(false);
   const [isExportingZip, setIsExportingZip] = useState<boolean>(false);
+  const [isClearingInvoices, setIsClearingInvoices] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copiedXmlChave, setCopiedXmlChave] = useState<string | null>(null);
 
   // SEFAZ WebService Query states
+  const [selectedStoreCnpj, setSelectedStoreCnpj] = useState<string>(activeCertificate?.cnpj || 'ALL');
   const [tipoConsultaSefaz, setTipoConsultaSefaz] = useState<'distNSU' | 'consNSU' | 'consChNFe'>('distNSU');
   const [sefazUltNSU, setSefazUltNSU] = useState<string>('0');
   const [sefazSpecificNSU, setSefazSpecificNSU] = useState<string>('');
@@ -76,6 +86,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
     ultNSU: string;
     maxNSU: string;
     totalDocs: number;
+    cnpj?: string;
   } | null>(null);
 
   // XML Filter & Search states
@@ -86,7 +97,6 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
   // File Upload input refs
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const xmlBatchInputRef = useRef<HTMLInputElement>(null);
 
   // SEFAZ WebService Status
   const [sefazStatus, setSefazStatus] = useState<{
@@ -101,6 +111,12 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
   useEffect(() => {
     checkStatus();
   }, [certUf, certAmbiente]);
+
+  useEffect(() => {
+    if (activeCertificate && selectedStoreCnpj === 'ALL') {
+      setSelectedStoreCnpj(activeCertificate.cnpj);
+    }
+  }, [activeCertificate]);
 
   const checkStatus = async () => {
     try {
@@ -140,8 +156,17 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
         certUf,
         certAmbiente
       );
+
+      // Add to certificates list without replacing existing ones
+      const cleanCnpj = cert.cnpj.replace(/\D/g, '');
+      const filtered = certificates.filter(c => c.cnpj.replace(/\D/g, '') !== cleanCnpj);
+      const updatedList = [cert, ...filtered];
+      
+      onCertificatesChange(updatedList);
       onCertificateChange(cert);
-      setSuccessMessage(`Certificado de "${cert.razaoSocial}" validado com sucesso! CNPJ: ${cert.cnpj}`);
+      setSelectedStoreCnpj(cert.cnpj);
+
+      setSuccessMessage(`Certificado da loja "${cert.razaoSocial}" (CNPJ: ${cert.cnpj}) adicionado com sucesso! Total: ${updatedList.length} loja(s) cadastradas.`);
       setCertPassword('');
       setSelectedCertFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -152,18 +177,26 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
     }
   };
 
-  const handleUnlinkCert = async () => {
-    if (confirm('Deseja realmente desvincular o certificado digital ativo?')) {
-      await SefazSyncService.unlinkCertificate();
-      onCertificateChange(null);
-      setSuccessMessage('Certificado digital desvinculado.');
+  const handleRemoveCertificate = async (cnpjToRemove: string) => {
+    if (confirm(`Deseja realmente remover o certificado do CNPJ ${cnpjToRemove}?`)) {
+      await SefazSyncService.removeCertificate(cnpjToRemove);
+      const cleanToRemove = cnpjToRemove.replace(/\D/g, '');
+      const updatedList = certificates.filter(c => c.cnpj.replace(/\D/g, '') !== cleanToRemove);
+      onCertificatesChange(updatedList);
+      
+      if (activeCertificate && activeCertificate.cnpj.replace(/\D/g, '') === cleanToRemove) {
+        onCertificateChange(updatedList.length > 0 ? updatedList[0] : null);
+      }
+      setSuccessMessage(`Certificado CNPJ ${cnpjToRemove} removido com sucesso.`);
     }
   };
 
-  // Synchronize XMLs directly from SEFAZ WebService
-  const handleSyncFromSefaz = async () => {
-    if (!activeCertificate) {
-      setErrorMessage('Vincule um certificado digital A1 antes de consultar o WebService da SEFAZ.');
+  // Synchronize XMLs for a single certificate / store
+  const handleSyncFromSefaz = async (targetCert?: SefazCertificate) => {
+    const certToUse = targetCert || activeCertificate || certificates.find(c => c.cnpj === selectedStoreCnpj) || (certificates.length > 0 ? certificates[0] : null);
+    
+    if (!certToUse) {
+      setErrorMessage('Adicione um certificado digital A1 antes de consultar a SEFAZ.');
       return;
     }
 
@@ -173,9 +206,9 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
     try {
       const result = await SefazSyncService.syncFromSefazWebService({
-        cnpj: activeCertificate.cnpj,
-        uf: activeCertificate.uf,
-        ambiente: activeCertificate.ambiente,
+        cnpj: certToUse.cnpj,
+        uf: certToUse.uf,
+        ambiente: certToUse.ambiente,
         tipoConsulta: tipoConsultaSefaz,
         ultNSU: sefazUltNSU,
         nsu: sefazSpecificNSU,
@@ -187,7 +220,8 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
         xMotivo: result.xMotivo,
         ultNSU: result.ultNSU,
         maxNSU: result.maxNSU,
-        totalDocs: result.newInvoices.length
+        totalDocs: result.newInvoices.length,
+        cnpj: certToUse.cnpj
       });
 
       if (result.ultNSU && result.ultNSU !== '0') {
@@ -200,9 +234,9 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
         const updatedList = [...added, ...invoices];
         onInvoicesChange(updatedList);
 
-        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. ${result.newInvoices.length} XML(s) baixado(s) e salvos no banco!`);
+        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. ${result.newInvoices.length} XML(s) baixado(s) e salvos no banco para ${certToUse.razaoSocial}!`);
       } else {
-        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. (Nenhum novo documento retornado para este NSU)`);
+        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. (Nenhum novo documento retornado para a loja ${certToUse.razaoSocial})`);
       }
     } catch (err: any) {
       setErrorMessage(`Falha na consulta SEFAZ: ${err.message}`);
@@ -211,37 +245,53 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
     }
   };
 
-  // Import XML or ZIP files from disk
-  const handleImportXmlBatch = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  // Synchronize XMLs for ALL registered certificates in sequence
+  const handleSyncAllStores = async () => {
+    if (certificates.length === 0) {
+      setErrorMessage('Nenhum certificado cadastrado para sincronizar.');
+      return;
+    }
 
-    setIsImportingFiles(true);
+    setIsSyncingAll(true);
     setErrorMessage(null);
     setSuccessMessage(null);
 
+    let totalNewDocs = 0;
+    const allAddedInvoices: SefazInvoice[] = [];
+
     try {
-      const fileList: File[] = Array.from(files);
-      const res = await SefazSyncService.importXmlFiles(fileList);
+      for (const cert of certificates) {
+        try {
+          const res = await SefazSyncService.syncFromSefazWebService({
+            cnpj: cert.cnpj,
+            uf: cert.uf,
+            ambiente: cert.ambiente,
+            tipoConsulta: 'distNSU',
+            ultNSU: '0'
+          });
 
-      if (res.invoices.length > 0) {
-        const existingMap = new Map<string, SefazInvoice>();
-        invoices.forEach(inv => existingMap.set(inv.chaveAcesso, inv));
-        res.invoices.forEach(inv => existingMap.set(inv.chaveAcesso, inv));
-        const merged = Array.from(existingMap.values());
-        onInvoicesChange(merged);
-
-        setSuccessMessage(`${res.successCount} arquivo(s) XML importado(s) e gravados no banco com sucesso!`);
+          if (res.newInvoices && res.newInvoices.length > 0) {
+            totalNewDocs += res.newInvoices.length;
+            allAddedInvoices.push(...res.newInvoices);
+          }
+        } catch (storeErr: any) {
+          console.warn(`[SEFAZ Sync All] Error querying for CNPJ ${cert.cnpj}:`, storeErr);
+        }
       }
 
-      if (res.errors.length > 0) {
-        setErrorMessage(`Avisos de importação: ${res.errors.slice(0, 3).join(' | ')}`);
+      if (allAddedInvoices.length > 0) {
+        const existingKeys = new Set(invoices.map(inv => inv.chaveAcesso));
+        const newOnes = allAddedInvoices.filter(inv => !existingKeys.has(inv.chaveAcesso));
+        const merged = [...newOnes, ...invoices];
+        onInvoicesChange(merged);
+        setSuccessMessage(`Sincronização geral concluída! ${totalNewDocs} novo(s) XML(s) obtido(s) de ${certificates.length} loja(s).`);
+      } else {
+        setSuccessMessage(`Sincronização geral concluída nas ${certificates.length} lojas. Sem novos documentos pendentes.`);
       }
     } catch (err: any) {
-      setErrorMessage(`Erro ao importar arquivos: ${err.message}`);
+      setErrorMessage(`Erro na sincronização de todas as lojas: ${err.message}`);
     } finally {
-      setIsImportingFiles(false);
-      if (xmlBatchInputRef.current) xmlBatchInputRef.current.value = '';
+      setIsSyncingAll(false);
     }
   };
 
@@ -268,6 +318,26 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
       setErrorMessage(`Falha ao gerar ZIP: ${err.message}`);
     } finally {
       setIsExportingZip(false);
+    }
+  };
+
+  // Clear all invoices from database
+  const handleClearAll = async () => {
+    if (confirm('Atenção: Deseja realmente apagar TODOS os registros de notas fiscais do banco de dados? Isso deixará a lista 100% limpa.')) {
+      setIsClearingInvoices(true);
+      try {
+        if (onClearAllInvoices) {
+          await onClearAllInvoices();
+        } else {
+          await SefazSyncService.clearAllInvoices();
+          onInvoicesChange([]);
+        }
+        setSuccessMessage('Banco de notas fiscais limpo com sucesso!');
+      } catch (err: any) {
+        setErrorMessage(`Falha ao limpar banco de notas: ${err.message}`);
+      } finally {
+        setIsClearingInvoices(false);
+      }
     }
   };
 
@@ -310,7 +380,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
   // Delete invoice
   const handleDeleteInvoice = async (chaveAcesso: string) => {
-    if (confirm('Deseja remover este XML do banco de dados local/Firestore?')) {
+    if (confirm('Deseja remover este XML do banco de dados?')) {
       await SefazSyncService.deleteInvoice(chaveAcesso);
       onInvoicesChange(invoices.filter(i => i.chaveAcesso !== chaveAcesso));
     }
@@ -338,28 +408,30 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
         <div>
           <div className="flex items-center space-x-2">
             <h2 className="text-sm sm:text-base font-bold uppercase tracking-tight text-[#141414]">
-              Central de XMLs SEFAZ & Certificado Digital A1
+              Central de XMLs SEFAZ & Multi-Certificados A1
             </h2>
             <span className="px-1.5 py-0.2 bg-[#141414] text-[#E4E3E0] text-[10px] font-bold uppercase rounded-xs">
               DADOS 100% REAIS
             </span>
           </div>
           <p className="text-[11px] text-[#141414]/70 mt-0.5 font-sans">
-            Comunicação oficial com WebService SEFAZ, download e cópia de XMLs oficiais, importação em lote e armazenamento em nuvem no Firestore.
+            Comunicação direta com o WebService da SEFAZ Nacional via mTLS para múltiplas lojas/CNPJs com download automático de XMLs.
           </p>
         </div>
 
         {/* Global Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Hidden File Input for Batch XML/ZIP (kept for background execution if needed) */}
-          <input
-            type="file"
-            ref={xmlBatchInputRef}
-            onChange={handleImportXmlBatch}
-            multiple
-            accept=".xml,.zip,.txt"
-            className="hidden"
-          />
+          {invoices.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              disabled={isClearingInvoices}
+              className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-red-200 text-red-900 font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center space-x-1.5 border border-red-900/30"
+              title="Limpar todos os registros de notas fiscais do banco"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-800" />
+              <span>Limpar Banco de Notas</span>
+            </button>
+          )}
 
           <button
             onClick={handleDownloadAllZip}
@@ -409,15 +481,15 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
         </button>
 
         <button
-          onClick={() => setActiveSubTab('certificado')}
+          onClick={() => setActiveSubTab('certificados')}
           className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs ${
-            activeSubTab === 'certificado'
+            activeSubTab === 'certificados'
               ? 'bg-[#141414] text-[#E4E3E0]'
               : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
           }`}
         >
           <KeyRound className="w-4 h-4" />
-          <span>Certificado Digital A1 {activeCertificate ? '✓' : ''}</span>
+          <span>Certificados Digitais A1 ({certificates.length})</span>
         </button>
 
         <button
@@ -443,7 +515,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
           <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-[#141414] pb-2">
               <div className="flex items-center space-x-2">
-                <RefreshCw className={`w-4 h-4 text-[#141414] ${isSyncingSefaz ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-4 h-4 text-[#141414] ${isSyncingSefaz || isSyncingAll ? 'animate-spin' : ''}`} />
                 <h3 className="font-bold text-[#141414] text-xs uppercase">
                   Puxar XMLs Diretamente da SEFAZ (WebService DFe)
                 </h3>
@@ -464,6 +536,27 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-2.5 items-end">
+              {/* Store / Certificate Selector */}
+              <div className="space-y-0.5">
+                <label className="text-[10px] font-bold uppercase text-[#141414]/70">Loja / Certificado:</label>
+                <select
+                  value={selectedStoreCnpj}
+                  onChange={(e) => {
+                    setSelectedStoreCnpj(e.target.value);
+                    const found = certificates.find(c => c.cnpj === e.target.value);
+                    if (found) onCertificateChange(found);
+                  }}
+                  className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold font-mono"
+                >
+                  {certificates.length === 0 && <option value="">Nenhum certificado cadastrado</option>}
+                  {certificates.map(cert => (
+                    <option key={cert.cnpj} value={cert.cnpj}>
+                      {cert.razaoSocial} ({cert.cnpj})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               {tipoConsultaSefaz === 'distNSU' && (
                 <div className="space-y-0.5">
                   <label className="text-[10px] font-bold uppercase text-[#141414]/70">Último NSU Consultado:</label>
@@ -491,8 +584,8 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
               )}
 
               {tipoConsultaSefaz === 'consChNFe' && (
-                <div className="space-y-0.5 col-span-2">
-                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">Chave de Acesso da NF-e (44 dígitos):</label>
+                <div className="space-y-0.5">
+                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">Chave da NF-e (44 dígitos):</label>
                   <input
                     type="text"
                     value={sefazChaveConsulta}
@@ -504,22 +597,26 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                 </div>
               )}
 
-              <div>
+              <div className="flex gap-2">
                 <button
-                  onClick={handleSyncFromSefaz}
-                  disabled={isSyncingSefaz || !activeCertificate}
-                  className="w-full py-1.5 px-3 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1.5 border border-[#141414] disabled:opacity-50"
+                  onClick={() => handleSyncFromSefaz()}
+                  disabled={isSyncingSefaz || certificates.length === 0}
+                  className="flex-1 py-1.5 px-3 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1.5 border border-[#141414] disabled:opacity-50"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSefaz ? 'animate-spin' : ''}`} />
-                  <span>{isSyncingSefaz ? 'Consultando...' : 'Consultar SEFAZ'}</span>
+                  <span>{isSyncingSefaz ? 'Consultando...' : 'Consultar Loja'}</span>
                 </button>
-              </div>
 
-              <div className="text-[10px] text-[#141414]/70 sm:col-span-2">
-                {activeCertificate ? (
-                  <span>Certificado ativo: <strong>{activeCertificate.razaoSocial}</strong> ({activeCertificate.cnpj})</span>
-                ) : (
-                  <span className="text-red-700 font-bold">Nenhum certificado A1 vinculado. Vincule na aba ao lado para consultar a SEFAZ.</span>
+                {certificates.length > 1 && (
+                  <button
+                    onClick={handleSyncAllStores}
+                    disabled={isSyncingAll}
+                    className="py-1.5 px-3 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1.5 border border-[#141414] disabled:opacity-50"
+                    title="Consultar todas as lojas em lote na SEFAZ"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>{isSyncingAll ? 'Sincronizando...' : 'Todas Lojas'}</span>
+                  </button>
                 )}
               </div>
             </div>
@@ -732,184 +829,191 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
       )}
 
       {/* ========================================================================= */}
-      {/* SUB-TAB 2: CERTIFICADO DIGITAL A1 */}
+      {/* SUB-TAB 2: MULTI-CERTIFICADOS DIGITAIS A1 */}
       {/* ========================================================================= */}
-      {activeSubTab === 'certificado' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      {activeSubTab === 'certificados' && (
+        <div className="space-y-4">
           
-          {/* Active Certificate Card */}
-          <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
-            <div className="flex items-center justify-between border-b border-[#141414] pb-2">
-              <h3 className="font-bold text-[#141414] text-xs uppercase flex items-center space-x-1.5">
-                <FileKey className="w-3.5 h-3.5 text-[#141414]" />
-                <span>Certificado Digital A1 em Uso</span>
-              </h3>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            
+            {/* Left: Registered Certificates List */}
+            <div className="lg:col-span-2 bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
+              <div className="flex items-center justify-between border-b border-[#141414] pb-2">
+                <h3 className="font-bold text-[#141414] text-xs uppercase flex items-center space-x-1.5">
+                  <Building2 className="w-3.5 h-3.5 text-[#141414]" />
+                  <span>Lojas & Certificados Digitais A1 Cadastrados ({certificates.length})</span>
+                </h3>
 
-              {activeCertificate && (
-                <button
-                  onClick={handleUnlinkCert}
-                  className="text-[10px] font-bold uppercase text-red-700 hover:underline flex items-center space-x-1"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  <span>Desvincular</span>
-                </button>
+                {certificates.length > 1 && (
+                  <button
+                    onClick={handleSyncAllStores}
+                    disabled={isSyncingAll}
+                    className="px-2.5 py-1 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] text-[10px] font-bold uppercase rounded-xs transition flex items-center space-x-1"
+                  >
+                    <Layers className="w-3 h-3" />
+                    <span>{isSyncingAll ? 'Sincronizando Todas...' : 'Sincronizar Todas as Lojas'}</span>
+                  </button>
+                )}
+              </div>
+
+              {certificates.length === 0 ? (
+                <div className="p-8 text-center space-y-2 bg-[#E4E3E0] rounded-sm border border-[#141414]">
+                  <KeyRound className="w-8 h-8 mx-auto text-[#141414]/50" />
+                  <div className="font-bold uppercase text-xs text-[#141414]">Nenhum Certificado Cadastrado</div>
+                  <p className="text-[11px] text-[#141414]/70 font-sans max-w-sm mx-auto">
+                    Faça o upload do arquivo .pfx de cada loja no formulário ao lado para habilitar a consulta direta de XMLs na SEFAZ.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {certificates.map((cert) => {
+                    const isSelected = activeCertificate?.cnpj === cert.cnpj;
+                    return (
+                      <div 
+                        key={cert.cnpj}
+                        className={`p-3 rounded-sm border transition ${
+                          isSelected ? 'bg-[#E4E3E0] border-[#141414] ring-1 ring-[#141414]' : 'bg-[#E4E3E0]/60 border-[#141414]/30 hover:border-[#141414]'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center space-x-2">
+                              <Store className="w-3.5 h-3.5 text-[#141414]" />
+                              <span className="font-bold text-xs text-[#141414]">{cert.razaoSocial}</span>
+                              <span className="px-1.5 py-0.2 bg-[#141414] text-[#E4E3E0] text-[9px] font-bold uppercase rounded-xs">
+                                {cert.uf} - {cert.ambiente}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-[#141414]/70 font-mono">
+                              CNPJ: <strong>{cert.cnpj}</strong> | Série: {cert.numeroSerie}
+                            </div>
+                            <div className="text-[10px] text-[#141414]/70">
+                              Validade: <strong>{new Date(cert.validadeFim).toLocaleDateString('pt-BR')}</strong> ({cert.diasRestantes} dias restantes)
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-1.5 self-end sm:self-center">
+                            <button
+                              onClick={() => {
+                                onCertificateChange(cert);
+                                setSelectedStoreCnpj(cert.cnpj);
+                                handleSyncFromSefaz(cert);
+                              }}
+                              disabled={isSyncingSefaz}
+                              className="px-2.5 py-1 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] text-[10px] font-bold uppercase rounded-xs transition flex items-center space-x-1"
+                              title="Consultar SEFAZ para este CNPJ"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                              <span>Consultar SEFAZ</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleRemoveCertificate(cert.cnpj)}
+                              className="p-1 bg-[#E4E3E0] hover:bg-red-200 text-red-900 border border-[#141414]/20 rounded-xs transition"
+                              title="Remover este certificado"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
-            {activeCertificate ? (
-              <div className="space-y-2.5 text-xs">
+            {/* Right: Upload New Certificate Form */}
+            <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
+              <div className="flex items-center justify-between border-b border-[#141414] pb-2">
+                <h3 className="font-bold text-[#141414] text-xs uppercase flex items-center space-x-1.5">
+                  <PlusCircle className="w-3.5 h-3.5 text-[#141414]" />
+                  <span>Adicionar Novo Certificado A1</span>
+                </h3>
+              </div>
+
+              <form onSubmit={handleUploadCert} className="space-y-2.5 text-xs">
                 
-                <div className="p-3 bg-[#E4E3E0] rounded-sm border border-[#141414] space-y-1.5">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div className="text-[10px] text-[#141414]/70 uppercase font-bold">Razão Social Titular:</div>
-                      <div className="font-bold text-[#141414] text-sm">{activeCertificate.razaoSocial}</div>
-                    </div>
-                    <span className={`px-2 py-0.5 rounded-xs text-[10px] font-bold border border-[#141414] ${
-                      activeCertificate.status === 'VALIDO' ? 'bg-[#141414] text-[#E4E3E0]' : 'bg-[#E4E3E0] text-red-700'
-                    }`}>
-                      {activeCertificate.status}
-                    </span>
-                  </div>
+                {/* File Input */}
+                <div className="space-y-0.5">
+                  <label className="font-bold uppercase text-[10px] text-[#141414]/70">
+                    Arquivo .pfx / .p12 da Loja:
+                  </label>
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleCertFileChange}
+                    accept=".pfx,.p12"
+                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-mono file:mr-2 file:py-1 file:px-2 file:rounded-xs file:border-0 file:text-xs file:font-bold file:bg-[#141414] file:text-[#E4E3E0] cursor-pointer"
+                  />
+                </div>
 
-                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#141414]/20 text-[11px]">
-                    <div>
-                      <span className="text-[#141414]/70 uppercase text-[10px] block">CNPJ:</span>
-                      <strong className="font-mono">{activeCertificate.cnpj}</strong>
-                    </div>
-                    <div>
-                      <span className="text-[#141414]/70 uppercase text-[10px] block">UF / Ambiente:</span>
-                      <strong>{activeCertificate.uf} - {activeCertificate.ambiente}</strong>
-                    </div>
+                {/* Password */}
+                <div className="space-y-0.5">
+                  <label className="font-bold uppercase text-[10px] text-[#141414]/70">
+                    Senha do Certificado:
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={certPassword}
+                      onChange={(e) => setCertPassword(e.target.value)}
+                      placeholder="Senha do arquivo A1..."
+                      className="w-full p-2 pr-9 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold text-[#141414] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#141414]/60 hover:text-[#141414]"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
                 </div>
 
-                <div className="space-y-1 text-[11px]">
-                  <div className="flex justify-between py-1 border-b border-[#141414]/15">
-                    <span className="text-[#141414]/70">Emissor Autorizado:</span>
-                    <span className="font-bold truncate max-w-[240px]">{activeCertificate.emissor}</span>
+                {/* UF & Ambiente */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-0.5">
+                    <label className="font-bold uppercase text-[10px] text-[#141414]/70">UF da Loja:</label>
+                    <select
+                      value={certUf}
+                      onChange={(e) => setCertUf(e.target.value)}
+                      className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm font-bold text-xs"
+                    >
+                      {['SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'PE', 'CE', 'GO', 'ES', 'MT', 'MS', 'DF', 'AM', 'PA', 'MA', 'PB', 'RN', 'AL', 'SE', 'PI', 'TO', 'RO', 'AC', 'AP', 'RR'].map(st => (
+                        <option key={st} value={st}>{st}</option>
+                      ))}
+                    </select>
                   </div>
-                  <div className="flex justify-between py-1 border-b border-[#141414]/15">
-                    <span className="text-[#141414]/70">Validade Até:</span>
-                    <span className="font-bold">{new Date(activeCertificate.validadeFim).toLocaleDateString('pt-BR')} ({activeCertificate.diasRestantes} dias restantes)</span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-[#141414]/15">
-                    <span className="text-[#141414]/70">Número de Série:</span>
-                    <span className="font-mono text-[10px]">{activeCertificate.numeroSerie}</span>
-                  </div>
-                  {activeCertificate.thumbprint && (
-                    <div className="flex justify-between py-1 border-b border-[#141414]/15">
-                      <span className="text-[#141414]/70">Thumbprint SHA-1:</span>
-                      <span className="font-mono text-[9px]">{activeCertificate.thumbprint}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between py-1">
-                    <span className="text-[#141414]/70">Chave Privada Decriptada:</span>
-                    <span className="font-bold">{activeCertificate.hasPrivateKey ? 'SIM (mTLS Ativo)' : 'NÃO'}</span>
+
+                  <div className="space-y-0.5">
+                    <label className="font-bold uppercase text-[10px] text-[#141414]/70">Ambiente:</label>
+                    <select
+                      value={certAmbiente}
+                      onChange={(e) => setCertAmbiente(e.target.value as any)}
+                      className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm font-bold text-xs"
+                    >
+                      <option value="PRODUCAO">Produção (Oficial)</option>
+                      <option value="HOMOLOGACAO">Homologação (Testes)</option>
+                    </select>
                   </div>
                 </div>
 
-              </div>
-            ) : (
-              <div className="p-6 text-center space-y-2 bg-[#E4E3E0] rounded-sm border border-[#141414]">
-                <KeyRound className="w-8 h-8 mx-auto text-[#141414]/50" />
-                <div className="font-bold uppercase text-xs text-[#141414]">Nenhum Certificado Vinculado</div>
-                <p className="text-[11px] text-[#141414]/70 font-sans">
-                  Faça o upload do arquivo .pfx com sua senha no formulário ao lado para habilitar a consulta direta de XMLs na SEFAZ.
-                </p>
-              </div>
-            )}
-          </div>
+                <div className="p-2 bg-[#E4E3E0] rounded-sm border border-[#141414] text-[10px] text-[#141414]/80">
+                  🔒 <strong>Multi-Certificados:</strong> Cada certificado cadastrado é armazenado de forma independente para permitir consultas simultâneas na SEFAZ.
+                </div>
 
-          {/* Upload New Certificate Form */}
-          <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
-            <div className="flex items-center justify-between border-b border-[#141414] pb-2">
-              <h3 className="font-bold text-[#141414] text-xs uppercase flex items-center space-x-1.5">
-                <UploadCloud className="w-3.5 h-3.5 text-[#141414]" />
-                <span>Carregar / Atualizar Certificado A1 (.pfx)</span>
-              </h3>
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-2 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-2 border border-[#141414] disabled:opacity-50"
+                >
+                  <ShieldCheck className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                  <span>{isLoading ? 'Validando Certificado...' : 'Salvar Certificado da Loja'}</span>
+                </button>
+              </form>
             </div>
 
-            <form onSubmit={handleUploadCert} className="space-y-2.5 text-xs">
-              
-              {/* File Input */}
-              <div className="space-y-0.5">
-                <label className="font-bold uppercase text-[10px] text-[#141414]/70">
-                  Arquivo do Certificado (.pfx / .p12):
-                </label>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleCertFileChange}
-                  accept=".pfx,.p12"
-                  className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-mono file:mr-2 file:py-1 file:px-2 file:rounded-xs file:border-0 file:text-xs file:font-bold file:bg-[#141414] file:text-[#E4E3E0] cursor-pointer"
-                />
-              </div>
-
-              {/* Password */}
-              <div className="space-y-0.5">
-                <label className="font-bold uppercase text-[10px] text-[#141414]/70">
-                  Senha do Certificado Digital:
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={certPassword}
-                    onChange={(e) => setCertPassword(e.target.value)}
-                    placeholder="Digite a senha do certificado A1..."
-                    className="w-full p-2 pr-9 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold text-[#141414] focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#141414]/60 hover:text-[#141414]"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* UF & Ambiente */}
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-0.5">
-                  <label className="font-bold uppercase text-[10px] text-[#141414]/70">UF da Empresa:</label>
-                  <select
-                    value={certUf}
-                    onChange={(e) => setCertUf(e.target.value)}
-                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm font-bold text-xs"
-                  >
-                    {['SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'PE', 'CE', 'GO', 'ES', 'MT', 'MS', 'DF', 'AM', 'PA', 'MA', 'PB', 'RN', 'AL', 'SE', 'PI', 'TO', 'RO', 'AC', 'AP', 'RR'].map(st => (
-                      <option key={st} value={st}>{st}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-0.5">
-                  <label className="font-bold uppercase text-[10px] text-[#141414]/70">Ambiente:</label>
-                  <select
-                    value={certAmbiente}
-                    onChange={(e) => setCertAmbiente(e.target.value as any)}
-                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm font-bold text-xs"
-                  >
-                    <option value="PRODUCAO">Produção (SEFAZ Oficial)</option>
-                    <option value="HOMOLOGACAO">Homologação (Testes)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="p-2 bg-[#E4E3E0] rounded-sm border border-[#141414] text-[10px] text-[#141414]/80">
-                🔒 <strong>Validação Criptográfica:</strong> O arquivo .pfx é decriptado usando a biblioteca PKCS#12 e registrado na sessão para autenticação mTLS direta com os servidores da SEFAZ.
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full py-2 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-2 border border-[#141414] disabled:opacity-50"
-              >
-                <ShieldCheck className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-                <span>{isLoading ? 'Decriptando Certificado...' : 'Validar e Ativar Certificado A1'}</span>
-              </button>
-            </form>
           </div>
 
         </div>
@@ -1089,7 +1193,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                       <tr className="bg-[#141414] text-[#E4E3E0] text-[10px] uppercase">
                         <th className="py-2 px-2.5">Item</th>
                         <th className="py-2 px-2.5">Código / EAN</th>
-                        <th className="py-2 px-2.5">Descrição do Produto</th>
+                        <th className="py-2.5 px-2.5">Descrição do Produto</th>
                         <th className="py-2 px-2.5">NCM / CFOP</th>
                         <th className="py-2 px-2.5 text-right">Qtd</th>
                         <th className="py-2 px-2.5 text-right">Vlr Unit</th>
