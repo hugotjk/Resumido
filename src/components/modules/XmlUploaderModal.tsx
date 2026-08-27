@@ -2,17 +2,16 @@ import React, { useState, useRef } from 'react';
 import { 
   X, 
   UploadCloud, 
-  FileText, 
   Trash2, 
-  CheckCircle2, 
   AlertCircle, 
-  Sparkles, 
   FileCode,
   Building,
   Calendar,
-  DollarSign
+  Archive,
+  Check
 } from 'lucide-react';
 import { SefazInvoice, PdvProduct, MkpConfig } from '../../types';
+import { SefazSyncService } from '../../services/sefazSyncService';
 import { SefazXmlParser } from '../../services/sefazParser';
 
 interface XmlUploaderModalProps {
@@ -22,63 +21,53 @@ interface XmlUploaderModalProps {
   onInvoicesChange: (invoices: SefazInvoice[]) => void;
   pdvProducts: PdvProduct[];
   mkpConfig: MkpConfig;
-  onLoadSamples: () => void;
 }
 
 export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
   isOpen,
   onClose,
   invoices,
-  onInvoicesChange,
-  pdvProducts,
-  mkpConfig,
-  onLoadSamples
+  onInvoicesChange
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [pasteMode, setPasteMode] = useState(false);
   const [pastedXml, setPastedXml] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
-  const processFiles = (files: FileList | File[]) => {
+  const processFiles = async (files: FileList | File[]) => {
     setErrorMsg(null);
-    const newInvoices: SefazInvoice[] = [...invoices];
-    let loadedCount = 0;
+    setSuccessMsg(null);
+    setIsProcessing(true);
 
-    Array.from(files).forEach((file) => {
-      if (!file.name.endsWith('.xml') && !file.type.includes('xml')) {
-        setErrorMsg('Por favor, selecione arquivos com extensão .xml válidos da SEFAZ (NF-e).');
-        return;
+    try {
+      const fileList = Array.from(files);
+      const res = await SefazSyncService.importXmlFiles(fileList);
+
+      if (res.invoices.length > 0) {
+        // Merge without duplicate chaveAcesso
+        const existingMap = new Map<string, SefazInvoice>();
+        invoices.forEach(i => existingMap.set(i.chaveAcesso, i));
+        res.invoices.forEach(i => existingMap.set(i.chaveAcesso, i));
+        const merged = Array.from(existingMap.values());
+        onInvoicesChange(merged);
+
+        setSuccessMsg(`${res.successCount} arquivo(s) XML gravados com sucesso no banco central!`);
       }
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const content = e.target?.result as string;
-          const parsed = SefazXmlParser.parseXmlString(content, pdvProducts, mkpConfig);
-          parsed.fileName = file.name;
-
-          // Check if already in list
-          const existingIdx = newInvoices.findIndex(inv => inv.chaveAcesso === parsed.chaveAcesso);
-          if (existingIdx >= 0) {
-            newInvoices[existingIdx] = parsed;
-          } else {
-            newInvoices.push(parsed);
-          }
-
-          loadedCount++;
-          if (loadedCount === files.length) {
-            onInvoicesChange([...newInvoices]);
-          }
-        } catch (err: any) {
-          console.error(err);
-          setErrorMsg(`Erro ao processar ${file.name}: ${err.message || 'XML inválido'}`);
-        }
-      };
-      reader.readAsText(file);
-    });
+      if (res.errors.length > 0) {
+        setErrorMsg(res.errors.slice(0, 3).join(' | '));
+      }
+    } catch (err: any) {
+      setErrorMsg(`Erro na importação: ${err.message}`);
+    } finally {
+      setIsProcessing(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const handleDrag = (e: React.DragEvent) => {
@@ -104,19 +93,20 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
     if (!pastedXml.trim()) return;
     try {
       setErrorMsg(null);
-      const parsed = SefazXmlParser.parseXmlString(pastedXml, pdvProducts, mkpConfig);
-      parsed.fileName = `NFe-${parsed.numero}.xml`;
-
-      const existingIdx = invoices.findIndex(inv => inv.chaveAcesso === parsed.chaveAcesso);
-      if (existingIdx >= 0) {
-        const updated = [...invoices];
-        updated[existingIdx] = parsed;
-        onInvoicesChange(updated);
-      } else {
-        onInvoicesChange([...invoices, parsed]);
+      const parsed = SefazXmlParser.parseXml(pastedXml);
+      if (!parsed) {
+        throw new Error('O texto colado não contém uma estrutura válida de NF-e/NFC-e.');
       }
+
+      const existingMap = new Map<string, SefazInvoice>();
+      invoices.forEach(i => existingMap.set(i.chaveAcesso, i));
+      existingMap.set(parsed.chaveAcesso, parsed);
+      const merged = Array.from(existingMap.values());
+      onInvoicesChange(merged);
+
       setPastedXml('');
       setPasteMode(false);
+      setSuccessMsg(`NF-e nº ${parsed.numero} importada com sucesso!`);
     } catch (err: any) {
       setErrorMsg(`Erro no XML colado: ${err.message}`);
     }
@@ -127,7 +117,9 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
   };
 
   const clearAll = () => {
-    onInvoicesChange([]);
+    if (confirm('Deseja realmente limpar todos os XMLs da lista atual?')) {
+      onInvoicesChange([]);
+    }
   };
 
   return (
@@ -145,10 +137,10 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-[#141414] text-xs sm:text-sm uppercase tracking-tight">
-                Importador de XML SEFAZ (NF-e)
+                Importador de XMLs e Arquivos .ZIP da SEFAZ
               </h3>
               <p className="text-[10px] text-[#141414]/70">
-                Arraste os arquivos XML das notas fiscais dos fornecedores para cruzar com o PDV
+                Envie arquivos .xml ou pacotes .zip contendo XMLs para armazenamento no banco central
               </p>
             </div>
           </div>
@@ -166,8 +158,15 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
           
           {errorMsg && (
             <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm flex items-start space-x-2 text-[#141414] text-xs font-mono">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#141414]" />
               <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {successMsg && (
+            <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm flex items-start space-x-2 text-[#141414] text-xs font-mono">
+              <Check className="w-4 h-4 shrink-0 mt-0.5 text-emerald-800" />
+              <span className="text-emerald-800 font-bold">{successMsg}</span>
             </div>
           )}
 
@@ -189,7 +188,7 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept=".xml,text/xml"
+                accept=".xml,.zip,.txt"
                 onChange={(e) => e.target.files && processFiles(e.target.files)}
                 className="hidden"
               />
@@ -197,10 +196,10 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
                 <UploadCloud className="w-5 h-5" />
               </div>
               <p className="text-xs font-bold uppercase tracking-wider text-[#141414]">
-                Arraste seus arquivos XML de NF-e aqui, ou <span className="underline">clique para selecionar</span>
+                {isProcessing ? 'Processando arquivos...' : 'Arraste seus arquivos .xml ou .zip aqui, ou clique para selecionar'}
               </p>
               <p className="text-[10px] text-[#141414]/70 mt-1">
-                Suporta múltiplos arquivos XML simultâneos (Layout NF-e v4.00 SEFAZ)
+                Suporta múltiplos arquivos XML e pacotes ZIP descompactados automaticamente
               </p>
             </div>
           ) : (
@@ -246,18 +245,6 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
               <FileCode className="w-3.5 h-3.5" />
               <span>{pasteMode ? 'Voltar para envio por arquivo' : 'Ou colar texto XML manualmente'}</span>
             </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onLoadSamples();
-                onClose();
-              }}
-              className="text-xs font-bold uppercase text-[#141414] bg-[#E4E3E0] hover:bg-[#d8d6d2] px-2.5 py-1 rounded-sm border border-[#141414] flex items-center space-x-1.5 transition"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-[#141414]" />
-              <span>Carregar 2 XMLs Exemplo para Teste</span>
-            </button>
           </div>
 
           {/* List of currently loaded invoices */}
@@ -265,7 +252,7 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
             <div className="space-y-2 pt-2">
               <div className="flex items-center justify-between border-b border-[#141414] pb-1.5">
                 <span className="text-xs font-bold text-[#141414] uppercase tracking-wider">
-                  Notas Carregadas ({invoices.length})
+                  Notas Gravadas no Banco ({invoices.length})
                 </span>
                 <button
                   onClick={clearAll}
@@ -325,13 +312,13 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
         {/* Footer */}
         <div className="px-4 py-3 bg-[#E4E3E0] border-t border-[#141414] flex items-center justify-between">
           <span className="text-[11px] text-[#141414]/70">
-            {invoices.length > 0 ? `${invoices.reduce((acc, i) => acc + i.itens.length, 0)} itens disponíveis` : 'Nenhuma nota carregada'}
+            {invoices.length > 0 ? `${invoices.reduce((acc, i) => acc + i.itens.length, 0)} itens gravados` : 'Nenhum XML carregado'}
           </span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 text-xs font-bold uppercase tracking-wider bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] rounded-sm transition border border-[#141414]"
           >
-            Concluir & Visualizar
+            Concluir & Fechar
           </button>
         </div>
 

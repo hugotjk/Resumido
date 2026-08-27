@@ -8,23 +8,14 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Navbar } from './components/Navbar';
 import { Sidebar, TabType } from './components/Sidebar';
 import { SefazCertificateManager } from './components/modules/SefazCertificateManager';
-import { MkpConference } from './components/modules/MkpConference';
-import { ProductRegistration } from './components/modules/ProductRegistration';
-import { EanSync } from './components/modules/EanSync';
-import { PaymentTermsConference } from './components/modules/PaymentTermsConference';
-import { Reports } from './components/modules/Reports';
-import { ClearanceSuggestion } from './components/modules/ClearanceSuggestion';
-import { TransferSuggestion } from './components/modules/TransferSuggestion';
-import { PhotoExtractor } from './components/modules/PhotoExtractor';
+import { MaintenanceModule } from './components/modules/MaintenanceModule';
 import { ApiSettings } from './components/modules/ApiSettings';
 import { XmlUploaderModal } from './components/modules/XmlUploaderModal';
 
-import { SefazInvoice, PdvProduct, ApiConfig, MkpConfig, ReportMovRes, ReportConsolidado, SefazCertificate } from './types';
+import { SefazInvoice, PdvProduct, ApiConfig, MkpConfig, SefazCertificate } from './types';
 import { PdvApiService } from './services/apiService';
-import { SefazXmlParser } from './services/sefazParser';
 import { SefazSyncService } from './services/sefazSyncService';
 import { FirestoreDbService } from './services/firestoreDbService';
-import { MOCK_MOV_RES, MOCK_CONSOLIDADO } from './services/mockData';
 
 export default function App() {
   const [activeCertificate, setActiveCertificate] = useState<SefazCertificate | null>(SefazSyncService.getSavedCertificateSync());
@@ -32,9 +23,8 @@ export default function App() {
   const [invoices, setInvoices] = useState<SefazInvoice[]>([]);
   const [pdvProducts, setPdvProducts] = useState<PdvProduct[]>([]);
   const [apiConfig, setApiConfig] = useState<ApiConfig>(PdvApiService.getConfig());
-  const [selectedStore, setSelectedStore] = useState<number>(1);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isXmlModalOpen, setIsXmlModalOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isXmlModalOpen, setIsXmlModalOpen] = useState<boolean>(false);
 
   const [mkpConfig, setMkpConfig] = useState<MkpConfig>({
     metaMkpPadrao: 2.20,
@@ -45,10 +35,7 @@ export default function App() {
     despesasOperacionaisPercentual: 15
   });
 
-  const [movRes, setMovRes] = useState<ReportMovRes>(MOCK_MOV_RES);
-  const [consolidado, setConsolidado] = useState<ReportConsolidado>(MOCK_CONSOLIDADO);
-
-  // Initial load
+  // Initial load from Cloud Firestore / Local Persistence
   useEffect(() => {
     loadInitialData();
   }, []);
@@ -66,14 +53,11 @@ export default function App() {
 
       if (savedDbMkp) setMkpConfig(savedDbMkp);
       
-      let currentProducts = savedDbProducts;
-      if (!currentProducts || currentProducts.length === 0) {
-        currentProducts = await PdvApiService.getProducts();
-        FirestoreDbService.savePdvProducts(currentProducts);
+      if (savedDbProducts && savedDbProducts.length > 0) {
+        setPdvProducts(savedDbProducts);
       }
-      setPdvProducts(currentProducts);
 
-      // 2. Load persisted invoices from database
+      // 2. Load persisted real invoices from database
       if (savedDbInvoices && savedDbInvoices.length > 0) {
         setInvoices(savedDbInvoices);
       }
@@ -81,26 +65,10 @@ export default function App() {
       // 3. Load active certificate
       if (savedCert) {
         setActiveCertificate(savedCert);
-        // If we don't have invoices yet, query or load from faturamento cache
-        if (!savedDbInvoices || savedDbInvoices.length === 0) {
-          const cachedReport = await FirestoreDbService.getLatestFaturamentoReport(savedCert.cnpj);
-          if (cachedReport) {
-            const allInvs = [...cachedReport.notasRecebidas, ...cachedReport.notasEmitidas];
-            setInvoices(allInvs);
-          } else {
-            try {
-              const report = await SefazSyncService.fetchSefazFaturamento(savedCert, currentProducts, savedDbMkp || mkpConfig);
-              const allInvs = [...report.notasRecebidas, ...report.notasEmitidas];
-              setInvoices(allInvs);
-            } catch {
-              // fallback
-            }
-          }
-        }
       }
 
       // 4. Test connectivity in background
-      PdvApiService.testConnection().then(res => {
+      PdvApiService.testConnection().then(() => {
         setApiConfig(PdvApiService.getConfig());
       });
     } catch (e) {
@@ -113,84 +81,27 @@ export default function App() {
   const handleRefreshData = async () => {
     setIsLoading(true);
     try {
-      const prods = await PdvApiService.getProducts();
-      setPdvProducts(prods);
-      FirestoreDbService.savePdvProducts(prods);
+      const [savedDbInvoices, savedDbProducts, savedCert] = await Promise.all([
+        FirestoreDbService.getAllInvoices(),
+        FirestoreDbService.getPdvProducts(),
+        SefazSyncService.getSavedCertificate()
+      ]);
 
-      const resMov = await PdvApiService.getMovResReport(undefined, selectedStore);
-      setMovRes(resMov);
+      if (savedDbInvoices) setInvoices(savedDbInvoices);
+      if (savedDbProducts) setPdvProducts(savedDbProducts);
+      if (savedCert) setActiveCertificate(savedCert);
+      
+      await PdvApiService.testConnection();
       setApiConfig(PdvApiService.getConfig());
-
-      if (activeCertificate) {
-        const report = await SefazSyncService.fetchSefazFaturamento(activeCertificate, prods, mkpConfig);
-        const allInvs = [...report.notasRecebidas, ...report.notasEmitidas];
-        setInvoices(allInvs);
-        FirestoreDbService.saveInvoices(allInvs);
-      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleApplyInvoicesToSystem = (newInvoices: SefazInvoice[]) => {
+  const handleUpdateInvoices = (newInvoices: SefazInvoice[]) => {
     setInvoices(newInvoices);
     FirestoreDbService.saveInvoices(newInvoices);
   };
-
-  const handleLoadSampleInvoices = () => {
-    const samples = SefazXmlParser.generateSampleInvoices(pdvProducts);
-    setInvoices(samples);
-    FirestoreDbService.saveInvoices(samples);
-  };
-
-  const handleApplyPriceToPdv = async (productId: string | number, newPrice: number, newCost: number) => {
-    await PdvApiService.updateProductPrice(productId, newPrice, newCost);
-    const updated = await PdvApiService.getProducts();
-    setPdvProducts(updated);
-    FirestoreDbService.savePdvProducts(updated);
-  };
-
-  const handleRegisterProduct = async (productData: Partial<PdvProduct>): Promise<PdvProduct> => {
-    const created = await PdvApiService.createProduct(productData);
-    const updated = await PdvApiService.getProducts();
-    setPdvProducts(updated);
-    FirestoreDbService.savePdvProducts(updated);
-    return created;
-  };
-
-  const handleUpdateProductEan = async (productId: string | number, newEan: string): Promise<boolean> => {
-    const ok = await PdvApiService.updateProductEan(productId, newEan);
-    const updated = await PdvApiService.getProducts();
-    setPdvProducts(updated);
-    FirestoreDbService.savePdvProducts(updated);
-    return ok;
-  };
-
-  const handleRefreshMovRes = async (date: string) => {
-    setIsLoading(true);
-    try {
-      const res = await PdvApiService.getMovResReport(date, selectedStore);
-      setMovRes(res);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Badge calculations for the sidebar
-  const mkpAlertsCount = invoices.reduce((acc, inv) => {
-    return acc + inv.itens.filter(item => {
-      const custo = item.custoLiquidoUnitario;
-      const precoVenda = item.pdvProduct ? item.pdvProduct.precoVenda : (custo * mkpConfig.metaMkpPadrao);
-      const mkp = custo > 0 ? (precoVenda / custo) : mkpConfig.metaMkpPadrao;
-      return mkp < mkpConfig.metaMkpPadrao * 0.95;
-    }).length;
-  }, 0);
-
-  const missingProductsCount = invoices.reduce((acc, inv) => {
-    return acc + inv.itens.filter(i => i.statusMatch === 'NAO_CADASTRADO').length;
-  }, 0);
-
-  const missingEanCount = pdvProducts.filter(p => !p.ean || p.ean.trim() === '').length;
 
   return (
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] flex flex-col font-sans selection:bg-[#141414] selection:text-[#E4E3E0]">
@@ -204,9 +115,6 @@ export default function App() {
         onOpenXmlModal={() => setIsXmlModalOpen(true)}
         onRefreshData={handleRefreshData}
         isLoading={isLoading}
-        selectedStore={selectedStore}
-        onSelectStore={setSelectedStore}
-        onLoadSampleInvoices={handleLoadSampleInvoices}
       />
 
       {/* Main Container */}
@@ -217,9 +125,9 @@ export default function App() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           badgeCounts={{
-            mkpAlerts: mkpAlertsCount,
-            missingProducts: missingProductsCount,
-            missingEan: missingEanCount,
+            mkpAlerts: 0,
+            missingProducts: 0,
+            missingEan: 0,
             pendingInvoices: invoices.length,
             hasActiveCert: !!activeCertificate
           }}
@@ -235,73 +143,86 @@ export default function App() {
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.1 }}
             >
+              {/* PRIMARY FOCUS: SEFAZ XML HUB & DIGITAL CERTIFICATE */}
               {activeTab === 'certificado' && (
                 <SefazCertificateManager
                   activeCertificate={activeCertificate}
                   onCertificateChange={setActiveCertificate}
-                  onApplyInvoicesToSystem={handleApplyInvoicesToSystem}
-                  pdvProducts={pdvProducts}
-                  mkpConfig={mkpConfig}
+                  invoices={invoices}
+                  onInvoicesChange={handleUpdateInvoices}
                 />
               )}
 
+              {/* MODULES RESERVED & IN MAINTENANCE WITHOUT LAYOUTS / FAKES */}
               {activeTab === 'mkp' && (
-                <MkpConference
-                  invoices={invoices}
-                  mkpConfig={mkpConfig}
-                  onUpdateMkpConfig={setMkpConfig}
-                  onApplyPriceToPdv={handleApplyPriceToPdv}
-                  onOpenXmlModal={() => setIsXmlModalOpen(true)}
+                <MaintenanceModule
+                  moduleName="Conferência de MKP (Markup & Custos)"
+                  moduleCode="MKP-CONF"
+                  description="Módulo reservado para conferência de preços de venda e markup com base nos XMLs consolidados. Aguardando definições de regras de negócio."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
                 />
               )}
 
               {activeTab === 'cadastro' && (
-                <ProductRegistration
-                  invoices={invoices}
-                  mkpConfig={mkpConfig}
-                  onRegisterProduct={handleRegisterProduct}
-                  onOpenXmlModal={() => setIsXmlModalOpen(true)}
+                <MaintenanceModule
+                  moduleName="Cadastro de Produto (SEFAZ → PDV)"
+                  moduleCode="CAD-PROD"
+                  description="Módulo reservado para importação e cadastro automático de novos itens encontrados nos XMLs da SEFAZ diretamente no banco central."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
                 />
               )}
 
               {activeTab === 'ean' && (
-                <EanSync
-                  invoices={invoices}
-                  pdvProducts={pdvProducts}
-                  onUpdateProductEan={handleUpdateProductEan}
-                  onOpenXmlModal={() => setIsXmlModalOpen(true)}
+                <MaintenanceModule
+                  moduleName="Sincronização de Código EAN / Barras"
+                  moduleCode="EAN-SYNC"
+                  description="Módulo reservado para conciliação e inserção de códigos de barras (EAN/GTIN) extraídos dos XMLs para o cadastro unificado."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
                 />
               )}
 
               {activeTab === 'prazos' && (
-                <PaymentTermsConference
-                  invoices={invoices}
-                  onOpenXmlModal={() => setIsXmlModalOpen(true)}
+                <MaintenanceModule
+                  moduleName="Prazos de Pagamento & Duplicatas"
+                  moduleCode="PAY-TERMS"
+                  description="Módulo reservado para conferência de faturas, parcelas e prazos de vencimento emitidos nos XMLs oficiais da SEFAZ."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
                 />
               )}
 
               {activeTab === 'relatorios' && (
-                <Reports
-                  movRes={movRes}
-                  consolidado={consolidado}
-                  onRefreshMovRes={handleRefreshMovRes}
-                  isLoading={isLoading}
+                <MaintenanceModule
+                  moduleName="Relatórios Gerenciais (Mov Res & Consolidado)"
+                  moduleCode="REP-MGR"
+                  description="Módulo reservado para demonstrativos gerenciais unificados e consolidação do banco central."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
                 />
               )}
 
               {activeTab === 'liquidacao' && (
-                <ClearanceSuggestion
-                  onApplyPriceToPdv={handleApplyPriceToPdv}
+                <MaintenanceModule
+                  moduleName="Sugestão de Liquidação"
+                  moduleCode="CLEARANCE"
+                  description="Módulo em manutenção. Aguardando parametrização das regras de liquidação."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
                 />
               )}
 
               {activeTab === 'remanejamento' && (
-                <TransferSuggestion />
+                <MaintenanceModule
+                  moduleName="Sugestão de Remanejamento"
+                  moduleCode="TRANSFER"
+                  description="Módulo em manutenção. Aguardando parametrização das regras de remanejamento."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
+                />
               )}
 
               {activeTab === 'fotos' && (
-                <PhotoExtractor
-                  pdvProducts={pdvProducts}
+                <MaintenanceModule
+                  moduleName="Extração de Fotos por EAN / Código"
+                  moduleCode="PHOTO-EXTRACT"
+                  description="Módulo em manutenção. Aguardando definições de formato de armazenamento."
+                  onNavigateToSefaz={() => setActiveTab('certificado')}
                 />
               )}
 
@@ -325,13 +246,11 @@ export default function App() {
         isOpen={isXmlModalOpen}
         onClose={() => setIsXmlModalOpen(false)}
         invoices={invoices}
-        onInvoicesChange={setInvoices}
+        onInvoicesChange={handleUpdateInvoices}
         pdvProducts={pdvProducts}
         mkpConfig={mkpConfig}
-        onLoadSamples={handleLoadSampleInvoices}
       />
 
     </div>
   );
 }
-

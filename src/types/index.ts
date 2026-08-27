@@ -87,6 +87,7 @@ export interface SefazInvoice {
   numero: string;
   serie: string;
   dataEmissao: string; // ISO date
+  tipoOperacao?: 'ENTRADA' | 'SAIDA';
   emitente: {
     cnpj: string;
     xNome: string;
@@ -117,6 +118,7 @@ export interface SefazInvoice {
   condicaoPagamentoDeclarada?: string; // ex: 30/60/90
   prazoMedioDias?: number;
   xmlRaw?: string;
+  xmlOriginal?: string;
   fileName?: string;
 }
 

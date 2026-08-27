@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ShieldCheck, 
   KeyRound, 
@@ -14,60 +14,79 @@ import {
   Eye, 
   EyeOff, 
   Download, 
-  FileSpreadsheet, 
   Clock, 
-  Sparkles, 
   Receipt, 
-  TrendingUp, 
-  ShoppingCart, 
-  Truck, 
   Copy, 
   Check, 
   Layers, 
   Lock,
   ExternalLink,
-  ChevronRight
+  Search,
+  Trash2,
+  FileCode,
+  Archive,
+  FileText,
+  AlertCircle,
+  HelpCircle
 } from 'lucide-react';
-import { SefazCertificate, SefazFaturamentoReport, SefazInvoice, PdvProduct, MkpConfig } from '../../types';
+import { SefazCertificate, SefazInvoice } from '../../types';
 import { SefazSyncService } from '../../services/sefazSyncService';
-import { CertificateParserService } from '../../services/certificateParser';
+import { SefazXmlParser } from '../../services/sefazParser';
 
 interface SefazCertificateManagerProps {
   activeCertificate: SefazCertificate | null;
   onCertificateChange: (cert: SefazCertificate | null) => void;
-  onApplyInvoicesToSystem: (newInvoices: SefazInvoice[]) => void;
-  pdvProducts: PdvProduct[];
-  mkpConfig: MkpConfig;
+  invoices: SefazInvoice[];
+  onInvoicesChange: (invoices: SefazInvoice[]) => void;
 }
 
 export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = ({
   activeCertificate,
   onCertificateChange,
-  onApplyInvoicesToSystem,
-  pdvProducts,
-  mkpConfig
+  invoices,
+  onInvoicesChange
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'certificado' | 'faturamento' | 'status_sefaz'>('certificado');
+  const [activeSubTab, setActiveSubTab] = useState<'xmls' | 'certificado' | 'status_sefaz'>('xmls');
   
-  // Form states
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [password, setPassword] = useState<string>('');
+  // Form states for Certificate
+  const [selectedCertFile, setSelectedCertFile] = useState<File | null>(null);
+  const [certPassword, setCertPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [uf, setUf] = useState<string>('SP');
-  const [ambiente, setAmbiente] = useState<'PRODUCAO' | 'HOMOLOGACAO'>('PRODUCAO');
+  const [certUf, setCertUf] = useState<string>(activeCertificate?.uf || 'SP');
+  const [certAmbiente, setCertAmbiente] = useState<'PRODUCAO' | 'HOMOLOGACAO'>(activeCertificate?.ambiente || 'PRODUCAO');
   
-  // Loading & error states
+  // Status & Feedback states
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isFetchingFaturamento, setIsFetchingFaturamento] = useState<boolean>(false);
+  const [isSyncingSefaz, setIsSyncingSefaz] = useState<boolean>(false);
+  const [isImportingFiles, setIsImportingFiles] = useState<boolean>(false);
+  const [isExportingZip, setIsExportingZip] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [copiedXmlChave, setCopiedXmlChave] = useState<string | null>(null);
 
-  // Faturamento Query filter states
-  const [periodoFaturamento, setPeriodoFaturamento] = useState<string>('ULTIMOS_30_DIAS');
-  const [tipoDocFaturamento, setTipoDocFaturamento] = useState<'TODAS' | 'EMITIDAS' | 'RECEBIDAS'>('TODAS');
-  const [faturamentoReport, setFaturamentoReport] = useState<SefazFaturamentoReport | null>(null);
-  const [selectedInvoicePreview, setSelectedInvoicePreview] = useState<SefazInvoice | null>(null);
+  // SEFAZ WebService Query states
+  const [tipoConsultaSefaz, setTipoConsultaSefaz] = useState<'distNSU' | 'consNSU' | 'consChNFe'>('distNSU');
+  const [sefazUltNSU, setSefazUltNSU] = useState<string>('0');
+  const [sefazSpecificNSU, setSefazSpecificNSU] = useState<string>('');
+  const [sefazChaveConsulta, setSefazChaveConsulta] = useState<string>('');
+  const [lastSefazResult, setLastSefazResult] = useState<{
+    cStat: number;
+    xMotivo: string;
+    ultNSU: string;
+    maxNSU: string;
+    totalDocs: number;
+  } | null>(null);
+
+  // XML Filter & Search states
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [tipoOperacaoFilter, setTipoOperacaoFilter] = useState<'TODAS' | 'ENTRADA' | 'SAIDA'>('TODAS');
+  const [selectedInvoiceModal, setSelectedInvoiceModal] = useState<SefazInvoice | null>(null);
+  const [rawXmlModal, setRawXmlModal] = useState<{ chave: string; numero: string; xml: string } | null>(null);
+
+  // File Upload input refs
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const xmlBatchInputRef = useRef<HTMLInputElement>(null);
 
   // SEFAZ WebService Status
   const [sefazStatus, setSefazStatus] = useState<{
@@ -80,34 +99,32 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
   } | null>(null);
 
   useEffect(() => {
-    // Check SEFAZ status on mount
     checkStatus();
-  }, [uf, ambiente]);
+  }, [certUf, certAmbiente]);
 
   const checkStatus = async () => {
     try {
-      const res = await SefazSyncService.checkSefazStatus(uf, ambiente);
+      const res = await SefazSyncService.checkSefazStatus(certUf, certAmbiente);
       setSefazStatus(res);
     } catch {
       // ignore
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCertFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setSelectedFile(file);
+      setSelectedCertFile(e.target.files[0]);
       setErrorMessage(null);
     }
   };
 
-  const handleUploadAndVerify = async (e: React.FormEvent) => {
+  const handleUploadCert = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedFile) {
+    if (!selectedCertFile) {
       setErrorMessage('Selecione o arquivo do certificado digital A1 (.pfx ou .p12).');
       return;
     }
-    if (!password) {
+    if (!certPassword) {
       setErrorMessage('Informe a senha do certificado digital A1.');
       return;
     }
@@ -118,767 +135,1044 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
     try {
       const cert = await SefazSyncService.uploadAndVerifyCertificate(
-        selectedFile,
-        password,
-        uf,
-        ambiente
+        selectedCertFile,
+        certPassword,
+        certUf,
+        certAmbiente
       );
       onCertificateChange(cert);
-      setSuccessMessage(`Certificado A1 validado e ativado com sucesso para ${cert.razaoSocial} (${cert.cnpj})!`);
-      setPassword('');
-      setSelectedFile(null);
-      // Automatically navigate to Faturamento tab
-      setActiveSubTab('faturamento');
-      // Automatically trigger initial faturamento fetch
-      handleFetchFaturamento(cert);
+      setSuccessMessage(`Certificado de "${cert.razaoSocial}" validado com sucesso! CNPJ: ${cert.cnpj}`);
+      setCertPassword('');
+      setSelectedCertFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err: any) {
-      setErrorMessage(err.message || 'Erro ao descriptografar certificado digital A1. Verifique se a senha está correta.');
+      setErrorMessage(err.message || 'Erro ao processar certificado digital.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleUnlinkCertificate = async () => {
-    if (confirm('Deseja realmente desvincular este certificado digital A1 do sistema?')) {
+  const handleUnlinkCert = async () => {
+    if (confirm('Deseja realmente desvincular o certificado digital ativo?')) {
       await SefazSyncService.unlinkCertificate();
       onCertificateChange(null);
-      setFaturamentoReport(null);
-      setSuccessMessage('Certificado desvinculado com sucesso.');
+      setSuccessMessage('Certificado digital desvinculado.');
     }
   };
 
-  const handleFetchFaturamento = async (certToUse?: SefazCertificate) => {
-    const cert = certToUse || activeCertificate;
-    if (!cert) {
-      setErrorMessage('Nenhum certificado A1 ativo. Importe o certificado primeiro.');
+  // Synchronize XMLs directly from SEFAZ WebService
+  const handleSyncFromSefaz = async () => {
+    if (!activeCertificate) {
+      setErrorMessage('Vincule um certificado digital A1 antes de consultar o WebService da SEFAZ.');
       return;
     }
 
-    setIsFetchingFaturamento(true);
+    setIsSyncingSefaz(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
+
     try {
-      const report = await SefazSyncService.fetchSefazFaturamento(
-        cert,
-        pdvProducts,
-        mkpConfig,
-        periodoFaturamento
-      );
-      setFaturamentoReport(report);
-      setSuccessMessage(`Sincronização SEFAZ concluída! ${report.totalNotasEmitidas} notas emitidas e ${report.totalNotasRecebidas} notas recebidas carregadas.`);
+      const result = await SefazSyncService.syncFromSefazWebService({
+        cnpj: activeCertificate.cnpj,
+        uf: activeCertificate.uf,
+        ambiente: activeCertificate.ambiente,
+        tipoConsulta: tipoConsultaSefaz,
+        ultNSU: sefazUltNSU,
+        nsu: sefazSpecificNSU,
+        chNFe: sefazChaveConsulta
+      });
+
+      setLastSefazResult({
+        cStat: result.cStat,
+        xMotivo: result.xMotivo,
+        ultNSU: result.ultNSU,
+        maxNSU: result.maxNSU,
+        totalDocs: result.newInvoices.length
+      });
+
+      if (result.ultNSU && result.ultNSU !== '0') {
+        setSefazUltNSU(result.ultNSU);
+      }
+
+      if (result.newInvoices.length > 0) {
+        const existingKeys = new Set(invoices.map(inv => inv.chaveAcesso));
+        const added = result.newInvoices.filter(inv => !existingKeys.has(inv.chaveAcesso));
+        const updatedList = [...added, ...invoices];
+        onInvoicesChange(updatedList);
+
+        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. ${result.newInvoices.length} XML(s) baixado(s) e salvos no banco!`);
+      } else {
+        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. (Nenhum novo documento retornado para este NSU)`);
+      }
     } catch (err: any) {
-      setErrorMessage(`Erro ao consultar SEFAZ: ${err.message || err}`);
+      setErrorMessage(`Falha na consulta SEFAZ: ${err.message}`);
     } finally {
-      setIsFetchingFaturamento(false);
+      setIsSyncingSefaz(false);
     }
   };
 
-  const handleSyncWithSystem = () => {
-    if (!faturamentoReport) return;
-    const allInvoices = [
-      ...faturamentoReport.notasRecebidas,
-      ...faturamentoReport.notasEmitidas
-    ];
-    onApplyInvoicesToSystem(allInvoices);
-    setSuccessMessage(`Todas as ${allInvoices.length} notas fiscais da SEFAZ foram integradas à Conferência de MKP, EAN e Prazos do sistema!`);
+  // Import XML or ZIP files from disk
+  const handleImportXmlBatch = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsImportingFiles(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const fileList: File[] = Array.from(files);
+      const res = await SefazSyncService.importXmlFiles(fileList);
+
+      if (res.invoices.length > 0) {
+        const existingMap = new Map<string, SefazInvoice>();
+        invoices.forEach(inv => existingMap.set(inv.chaveAcesso, inv));
+        res.invoices.forEach(inv => existingMap.set(inv.chaveAcesso, inv));
+        const merged = Array.from(existingMap.values());
+        onInvoicesChange(merged);
+
+        setSuccessMessage(`${res.successCount} arquivo(s) XML importado(s) e gravados no banco com sucesso!`);
+      }
+
+      if (res.errors.length > 0) {
+        setErrorMessage(`Avisos de importação: ${res.errors.slice(0, 3).join(' | ')}`);
+      }
+    } catch (err: any) {
+      setErrorMessage(`Erro ao importar arquivos: ${err.message}`);
+    } finally {
+      setIsImportingFiles(false);
+      if (xmlBatchInputRef.current) xmlBatchInputRef.current.value = '';
+    }
   };
 
-  const handleCopy = (text: string, keyId: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedKey(keyId);
-    setTimeout(() => setCopiedKey(null), 2000);
+  // Download all XMLs as a ZIP
+  const handleDownloadAllZip = async () => {
+    if (invoices.length === 0) {
+      setErrorMessage('Nenhum XML disponível no banco para exportação.');
+      return;
+    }
+
+    setIsExportingZip(true);
+    try {
+      const zipBlob = await SefazSyncService.exportInvoicesToZip(invoices);
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SEFAZ_XMLs_LOTE_${new Date().toISOString().split('T')[0]}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSuccessMessage(`Pacote ZIP com ${invoices.length} XML(s) baixado com sucesso!`);
+    } catch (err: any) {
+      setErrorMessage(`Falha ao gerar ZIP: ${err.message}`);
+    } finally {
+      setIsExportingZip(false);
+    }
   };
 
-  const formatMoney = (val: number) => {
-    return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  // Download single XML file
+  const handleDownloadSingleXml = (inv: SefazInvoice) => {
+    const xmlContent = inv.xmlOriginal || inv.xmlRaw || SefazXmlParser.generateXml(inv);
+    const blob = new Blob([xmlContent], { type: 'application/xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${inv.chaveAcesso || `NFe_${inv.numero}`}.xml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
-  const filteredInvoices = faturamentoReport ? (
-    tipoDocFaturamento === 'EMITIDAS' 
-      ? faturamentoReport.notasEmitidas 
-      : tipoDocFaturamento === 'RECEBIDAS' 
-        ? faturamentoReport.notasRecebidas 
-        : [...faturamentoReport.notasRecebidas, ...faturamentoReport.notasEmitidas]
-  ) : [];
+  // Copy raw XML string to clipboard
+  const handleCopyXml = async (inv: SefazInvoice) => {
+    const xmlContent = inv.xmlOriginal || inv.xmlRaw || SefazXmlParser.generateXml(inv);
+    try {
+      await navigator.clipboard.writeText(xmlContent);
+      setCopiedXmlChave(inv.chaveAcesso);
+      setTimeout(() => setCopiedXmlChave(null), 3000);
+    } catch {
+      // fallback
+    }
+  };
+
+  // Copy Chave de Acesso
+  const handleCopyChave = async (chave: string) => {
+    try {
+      await navigator.clipboard.writeText(chave);
+      setCopiedKey(chave);
+      setTimeout(() => setCopiedKey(null), 3000);
+    } catch {
+      // fallback
+    }
+  };
+
+  // Delete invoice
+  const handleDeleteInvoice = async (chaveAcesso: string) => {
+    if (confirm('Deseja remover este XML do banco de dados local/Firestore?')) {
+      await SefazSyncService.deleteInvoice(chaveAcesso);
+      onInvoicesChange(invoices.filter(i => i.chaveAcesso !== chaveAcesso));
+    }
+  };
+
+  // Filtered invoices list
+  const filteredInvoices = invoices.filter(inv => {
+    const matchesSearch = 
+      inv.chaveAcesso.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      inv.numero.toString().includes(searchQuery) ||
+      inv.emitente.xNome.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      inv.emitente.cnpj.includes(searchQuery) ||
+      inv.itens.some(it => it.xProd.toLowerCase().includes(searchQuery.toLowerCase()) || (it.cEAN && it.cEAN.includes(searchQuery)));
+
+    if (tipoOperacaoFilter === 'ENTRADA') return matchesSearch && inv.tipoOperacao === 'ENTRADA';
+    if (tipoOperacaoFilter === 'SAIDA') return matchesSearch && inv.tipoOperacao === 'SAIDA';
+    return matchesSearch;
+  });
 
   return (
-    <div className="space-y-4">
-      
-      {/* Top Header Card */}
-      <div className="bg-[#F0EFED] border border-[#141414] p-4 rounded-sm">
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          
-          <div>
-            <div className="flex items-center space-x-2">
-              <div className="w-7 h-7 bg-[#141414] text-[#E4E3E0] flex items-center justify-center rounded-xs">
-                <KeyRound className="w-4 h-4 text-[#E4E3E0]" />
-              </div>
-              <h1 className="text-base font-bold uppercase tracking-tight text-[#141414]">
-                Certificado Digital A1 & Extração SEFAZ
-              </h1>
-              <span className="text-[10px] font-mono font-bold bg-[#141414] text-[#E4E3E0] px-1.5 py-0.5 rounded-xs uppercase">
-                ICP-Brasil Real
-              </span>
-            </div>
-            <p className="text-xs text-[#141414]/70 mt-1">
-              Importação criptografada de certificado digital (.pfx / .p12) para consulta direta de faturamentos, NF-e de vendas e compras na SEFAZ.
-            </p>
+    <div className="space-y-4 font-mono">
+
+      {/* Header Banner */}
+      <div className="bg-[#F0EFED] p-3.5 sm:p-4 rounded-sm border border-[#141414] flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center space-x-2">
+            <h2 className="text-sm sm:text-base font-bold uppercase tracking-tight text-[#141414]">
+              Central de XMLs SEFAZ & Certificado Digital A1
+            </h2>
+            <span className="px-1.5 py-0.2 bg-[#141414] text-[#E4E3E0] text-[10px] font-bold uppercase rounded-xs">
+              DADOS 100% REAIS
+            </span>
           </div>
-
-          {/* Quick Status Pill */}
-          <div className="flex items-center space-x-2 text-[11px] font-mono">
-            <div className="flex items-center space-x-1.5 bg-[#E4E3E0] px-2.5 py-1.5 rounded-xs border border-[#141414]">
-              <span className="text-[#141414]/60 uppercase font-bold text-[10px]">SEFAZ {uf}:</span>
-              <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
-              <span className="font-bold text-[#141414]">ONLINE (cStat 107)</span>
-            </div>
-
-            {activeCertificate ? (
-              <div className="flex items-center space-x-1.5 bg-[#141414] text-[#E4E3E0] px-2.5 py-1.5 rounded-xs border border-[#141414]">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="font-bold uppercase text-[10px] truncate max-w-[180px]">
-                  {activeCertificate.cnpj}
-                </span>
-                <span className="text-[9px] bg-[#E4E3E0] text-[#141414] px-1 font-bold rounded-xs">
-                  {activeCertificate.diasRestantes}d
-                </span>
-              </div>
-            ) : (
-              <div className="flex items-center space-x-1.5 bg-amber-100 text-amber-900 border border-amber-400 px-2.5 py-1.5 rounded-xs font-bold text-[10px] uppercase">
-                <AlertTriangle className="w-3.5 h-3.5" />
-                <span>Nenhum Certificado A1 Ativo</span>
-              </div>
-            )}
-          </div>
-
+          <p className="text-[11px] text-[#141414]/70 mt-0.5 font-sans">
+            Comunicação oficial com WebService SEFAZ, download e cópia de XMLs oficiais, importação em lote e armazenamento em nuvem no Firestore.
+          </p>
         </div>
 
-        {/* Sub-tab navigation */}
-        <div className="flex items-center space-x-1 border-b border-[#141414]/20 pt-4 mt-2">
+        {/* Global Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Hidden File Input for Batch XML/ZIP */}
+          <input
+            type="file"
+            ref={xmlBatchInputRef}
+            onChange={handleImportXmlBatch}
+            multiple
+            accept=".xml,.zip,.txt"
+            className="hidden"
+          />
+
           <button
-            id="subtab-cert"
-            onClick={() => setActiveSubTab('certificado')}
-            className={`px-3 py-1.5 text-xs font-bold uppercase font-mono transition-all border-b-2 -mb-px flex items-center space-x-1.5 ${
-              activeSubTab === 'certificado'
-                ? 'border-[#141414] text-[#141414] bg-[#E4E3E0]'
-                : 'border-transparent text-[#141414]/60 hover:text-[#141414]'
-            }`}
+            onClick={() => xmlBatchInputRef.current?.click()}
+            disabled={isImportingFiles}
+            className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center space-x-1.5 border border-[#141414] disabled:opacity-50"
+            title="Importar arquivos .xml ou arquivo .zip do computador"
           >
-            <FileKey className="w-3.5 h-3.5" />
-            <span>1. Certificado Digital A1</span>
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span>{isImportingFiles ? 'Importando...' : 'Importar XML / ZIP'}</span>
           </button>
 
           <button
-            id="subtab-faturamento"
-            onClick={() => setActiveSubTab('faturamento')}
-            className={`px-3 py-1.5 text-xs font-bold uppercase font-mono transition-all border-b-2 -mb-px flex items-center space-x-1.5 ${
-              activeSubTab === 'faturamento'
-                ? 'border-[#141414] text-[#141414] bg-[#E4E3E0]'
-                : 'border-transparent text-[#141414]/60 hover:text-[#141414]'
-            }`}
+            onClick={handleDownloadAllZip}
+            disabled={isExportingZip || invoices.length === 0}
+            className="px-3 py-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center space-x-1.5 border border-[#141414] disabled:opacity-50"
+            title="Baixar todos os XMLs salvos no banco em um arquivo .zip"
           >
-            <Receipt className="w-3.5 h-3.5" />
-            <span>2. Faturamento & NF-e SEFAZ</span>
-            {faturamentoReport && (
-              <span className="text-[9px] bg-[#141414] text-[#E4E3E0] px-1 rounded-xs">
-                {faturamentoReport.totalNotasEmitidas + faturamentoReport.totalNotasRecebidas} NFs
-              </span>
-            )}
-          </button>
-
-          <button
-            id="subtab-status"
-            onClick={() => setActiveSubTab('status_sefaz')}
-            className={`px-3 py-1.5 text-xs font-bold uppercase font-mono transition-all border-b-2 -mb-px flex items-center space-x-1.5 ${
-              activeSubTab === 'status_sefaz'
-                ? 'border-[#141414] text-[#141414] bg-[#E4E3E0]'
-                : 'border-transparent text-[#141414]/60 hover:text-[#141414]'
-            }`}
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>3. Diagnóstico WebServices</span>
+            <Archive className="w-3.5 h-3.5" />
+            <span>{isExportingZip ? 'Gerando ZIP...' : `Baixar Todos (${invoices.length}) .ZIP`}</span>
           </button>
         </div>
-
       </div>
 
-      {/* Messages */}
+      {/* Notifications */}
       {errorMessage && (
-        <div className="bg-red-50 border border-red-500 text-red-900 px-3 py-2 rounded-sm text-xs flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <XCircle className="w-4 h-4 text-red-600 shrink-0" />
-            <span className="font-mono">{errorMessage}</span>
+        <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm flex items-start space-x-2 text-[#141414] text-xs">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-[#141414]" />
+          <div>
+            <span className="font-bold uppercase">Aviso do Sistema: </span>
+            <span>{errorMessage}</span>
           </div>
-          <button onClick={() => setErrorMessage(null)} className="text-xs font-bold">×</button>
         </div>
       )}
 
       {successMessage && (
-        <div className="bg-emerald-50 border border-emerald-600 text-emerald-900 px-3 py-2 rounded-sm text-xs flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span className="font-mono">{successMessage}</span>
+        <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm flex items-start space-x-2 text-[#141414] text-xs">
+          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#141414]" />
+          <div>
+            <span className="font-bold uppercase">Sucesso: </span>
+            <span>{successMessage}</span>
           </div>
-          <button onClick={() => setSuccessMessage(null)} className="text-xs font-bold">×</button>
         </div>
       )}
 
-      {/* TAB 1: CERTIFICATE MANAGEMENT */}
-      {activeSubTab === 'certificado' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+      {/* Navigation Sub-Tabs */}
+      <div className="flex border-b border-[#141414] bg-[#F0EFED] p-1 gap-1 text-xs">
+        <button
+          onClick={() => setActiveSubTab('xmls')}
+          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs ${
+            activeSubTab === 'xmls'
+              ? 'bg-[#141414] text-[#E4E3E0]'
+              : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
+          }`}
+        >
+          <FileCode className="w-4 h-4" />
+          <span>XMLs da SEFAZ ({invoices.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('certificado')}
+          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs ${
+            activeSubTab === 'certificado'
+              ? 'bg-[#141414] text-[#E4E3E0]'
+              : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
+          }`}
+        >
+          <KeyRound className="w-4 h-4" />
+          <span>Certificado Digital A1 {activeCertificate ? '✓' : ''}</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('status_sefaz')}
+          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs ${
+            activeSubTab === 'status_sefaz'
+              ? 'bg-[#141414] text-[#E4E3E0]'
+              : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
+          }`}
+        >
+          <ShieldCheck className="w-4 h-4" />
+          <span>Status WebService SEFAZ</span>
+        </button>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* SUB-TAB 1: XMLS MANAGEMENT & COPIER */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'xmls' && (
+        <div className="space-y-4">
           
-          {/* Left Column: Upload & Password Form */}
-          <div className="lg:col-span-6 bg-[#F0EFED] border border-[#141414] p-4 rounded-sm">
-            <div className="flex items-center justify-between border-b border-[#141414]/15 pb-2 mb-3">
-              <h2 className="text-xs font-mono font-bold uppercase text-[#141414] flex items-center space-x-1.5">
-                <UploadCloud className="w-4 h-4 text-[#141414]" />
-                <span>Importar Arquivo do Certificado A1 (.pfx / .p12)</span>
-              </h2>
-              <span className="text-[10px] font-mono text-[#141414]/60">Criptografia RSA 2048</span>
+          {/* SEFAZ WebService Sync Action Bar */}
+          <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-[#141414] pb-2">
+              <div className="flex items-center space-x-2">
+                <RefreshCw className={`w-4 h-4 text-[#141414] ${isSyncingSefaz ? 'animate-spin' : ''}`} />
+                <h3 className="font-bold text-[#141414] text-xs uppercase">
+                  Puxar XMLs Diretamente da SEFAZ (WebService DFe)
+                </h3>
+              </div>
+
+              <div className="flex items-center space-x-2 text-[11px]">
+                <span className="text-[#141414]/70">Tipo de Consulta:</span>
+                <select
+                  value={tipoConsultaSefaz}
+                  onChange={(e) => setTipoConsultaSefaz(e.target.value as any)}
+                  className="bg-[#E4E3E0] border border-[#141414] rounded-xs px-2 py-0.5 font-bold text-xs"
+                >
+                  <option value="distNSU">Por Último NSU (Lote)</option>
+                  <option value="consNSU">Por NSU Específico</option>
+                  <option value="consChNFe">Por Chave de Acesso (44 dígitos)</option>
+                </select>
+              </div>
             </div>
 
-            <form onSubmit={handleUploadAndVerify} className="space-y-3.5">
-              
-              {/* File Dropzone */}
-              <div>
-                <label className="block text-[11px] font-mono font-bold uppercase text-[#141414] mb-1">
-                  Arquivo do Certificado Digital:
-                </label>
-                <div className="border border-dashed border-[#141414] bg-[#E4E3E0] hover:bg-[#d8d7d4] transition p-4 rounded-sm text-center relative cursor-pointer">
+            <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-2.5 items-end">
+              {tipoConsultaSefaz === 'distNSU' && (
+                <div className="space-y-0.5">
+                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">Último NSU Consultado:</label>
                   <input
-                    id="input-cert-file"
-                    type="file"
-                    accept=".pfx,.p12"
-                    onChange={handleFileChange}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    type="text"
+                    value={sefazUltNSU}
+                    onChange={(e) => setSefazUltNSU(e.target.value)}
+                    placeholder="0"
+                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold font-mono"
                   />
-                  <div className="flex flex-col items-center justify-center space-y-1">
-                    <FileKey className="w-7 h-7 text-[#141414]" />
-                    {selectedFile ? (
-                      <div>
-                        <p className="text-xs font-bold font-mono text-[#141414]">{selectedFile.name}</p>
-                        <p className="text-[10px] font-mono text-[#141414]/60">{(selectedFile.size / 1024).toFixed(1)} KB • Arquivo PKCS#12 Selecionado</p>
-                      </div>
-                    ) : (
-                      <div>
-                        <p className="text-xs font-bold uppercase font-mono text-[#141414]">Clique ou arraste o arquivo .pfx ou .p12</p>
-                        <p className="text-[10px] font-mono text-[#141414]/60">Certificado padrão ICP-Brasil (e-CNPJ ou e-CPF)</p>
-                      </div>
-                    )}
+                </div>
+              )}
+
+              {tipoConsultaSefaz === 'consNSU' && (
+                <div className="space-y-0.5">
+                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">NSU a Consultar:</label>
+                  <input
+                    type="text"
+                    value={sefazSpecificNSU}
+                    onChange={(e) => setSefazSpecificNSU(e.target.value)}
+                    placeholder="Ex: 000000000001234"
+                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold font-mono"
+                  />
+                </div>
+              )}
+
+              {tipoConsultaSefaz === 'consChNFe' && (
+                <div className="space-y-0.5 col-span-2">
+                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">Chave de Acesso da NF-e (44 dígitos):</label>
+                  <input
+                    type="text"
+                    value={sefazChaveConsulta}
+                    onChange={(e) => setSefazChaveConsulta(e.target.value)}
+                    placeholder="35240803245678000112550010000078411009876541"
+                    maxLength={44}
+                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold font-mono"
+                  />
+                </div>
+              )}
+
+              <div>
+                <button
+                  onClick={handleSyncFromSefaz}
+                  disabled={isSyncingSefaz || !activeCertificate}
+                  className="w-full py-1.5 px-3 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1.5 border border-[#141414] disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSefaz ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingSefaz ? 'Consultando...' : 'Consultar SEFAZ'}</span>
+                </button>
+              </div>
+
+              <div className="text-[10px] text-[#141414]/70 sm:col-span-2">
+                {activeCertificate ? (
+                  <span>Certificado ativo: <strong>{activeCertificate.razaoSocial}</strong> ({activeCertificate.cnpj})</span>
+                ) : (
+                  <span className="text-red-700 font-bold">Nenhum certificado A1 vinculado. Vincule na aba ao lado para consultar a SEFAZ.</span>
+                )}
+              </div>
+            </div>
+
+            {lastSefazResult && (
+              <div className="p-2 bg-[#E4E3E0] rounded-sm border border-[#141414] text-[11px] flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <strong>Status SEFAZ:</strong> cStat {lastSefazResult.cStat} - {lastSefazResult.xMotivo}
+                </div>
+                <div className="flex items-center space-x-3 text-[10px]">
+                  <span>ultNSU: <strong>{lastSefazResult.ultNSU}</strong></span>
+                  <span>maxNSU: <strong>{lastSefazResult.maxNSU}</strong></span>
+                  <span>Docs: <strong>{lastSefazResult.totalDocs}</strong></span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* XML Search & Filter Bar */}
+          <div className="bg-[#F0EFED] p-3 rounded-sm border border-[#141414] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#141414]/60" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar por Chave de Acesso, CNPJ, Razão Social, Número da Nota ou Produto..."
+                className="w-full pl-8 pr-3 py-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold focus:outline-none"
+              />
+            </div>
+
+            <div className="flex items-center space-x-2 text-xs">
+              <span className="text-[10px] uppercase font-bold text-[#141414]/70">Tipo:</span>
+              <select
+                value={tipoOperacaoFilter}
+                onChange={(e) => setTipoOperacaoFilter(e.target.value as any)}
+                className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
+              >
+                <option value="TODAS">Todas ({invoices.length})</option>
+                <option value="ENTRADA">Entradas / Fornecedores ({invoices.filter(i => i.tipoOperacao === 'ENTRADA').length})</option>
+                <option value="SAIDA">Saídas / Vendas ({invoices.filter(i => i.tipoOperacao === 'SAIDA').length})</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Invoices & XMLs Table */}
+          <div className="bg-[#F0EFED] rounded-sm border border-[#141414] overflow-hidden">
+            {filteredInvoices.length === 0 ? (
+              <div className="p-10 text-center space-y-3">
+                <FileCode className="w-10 h-10 mx-auto text-[#141414]/40" />
+                <h4 className="text-xs font-bold uppercase text-[#141414]">
+                  Nenhum XML de NF-e encontrado no banco
+                </h4>
+                <p className="text-[11px] text-[#141414]/70 max-w-md mx-auto font-sans">
+                  Você pode puxar notas fiscais diretamente da SEFAZ usando seu Certificado A1 ou clicar no botão <strong>"Importar XML / ZIP"</strong> acima para carregar notas do seu computador.
+                </p>
+                <div className="pt-2">
+                  <button
+                    onClick={() => xmlBatchInputRef.current?.click()}
+                    className="px-3.5 py-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] text-xs font-bold uppercase rounded-sm inline-flex items-center space-x-1.5"
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Selecionar Arquivos XML / ZIP</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-[#141414] text-[#E4E3E0] text-[10px] uppercase tracking-wider">
+                      <th className="py-2.5 px-3">Operação</th>
+                      <th className="py-2.5 px-3">Número / Série</th>
+                      <th className="py-2.5 px-3">Data Emissão</th>
+                      <th className="py-2.5 px-3">Emitente / CNPJ</th>
+                      <th className="py-2.5 px-3">Destinatário</th>
+                      <th className="py-2.5 px-3 text-right">Valor Total</th>
+                      <th className="py-2.5 px-3 text-center">Itens</th>
+                      <th className="py-2.5 px-3 text-center">Chave de Acesso</th>
+                      <th className="py-2.5 px-3 text-right">Ações Rápidas</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#141414]/15">
+                    {filteredInvoices.map((inv) => (
+                      <tr key={inv.chaveAcesso} className="hover:bg-[#E4E3E0]/70 transition">
+                        
+                        {/* Tipo Operação */}
+                        <td className="py-2 px-3">
+                          <span className={`px-1.5 py-0.5 rounded-xs text-[9px] font-bold border border-[#141414] ${
+                            inv.tipoOperacao === 'ENTRADA'
+                              ? 'bg-[#141414] text-[#E4E3E0]'
+                              : 'bg-[#E4E3E0] text-[#141414]'
+                          }`}>
+                            {inv.tipoOperacao || 'NF-e'}
+                          </span>
+                        </td>
+
+                        {/* Número / Série */}
+                        <td className="py-2 px-3 font-bold font-mono text-[#141414]">
+                          NF-e {inv.numero} <span className="text-[10px] text-[#141414]/60 font-normal">Série {inv.serie}</span>
+                        </td>
+
+                        {/* Data Emissão */}
+                        <td className="py-2 px-3 text-[11px] text-[#141414]/80 whitespace-nowrap">
+                          {new Date(inv.dataEmissao).toLocaleDateString('pt-BR')}
+                        </td>
+
+                        {/* Emitente */}
+                        <td className="py-2 px-3">
+                          <div className="font-bold text-[#141414] truncate max-w-[180px]" title={inv.emitente.xNome}>
+                            {inv.emitente.xNome}
+                          </div>
+                          <div className="text-[10px] text-[#141414]/60 font-mono">
+                            {inv.emitente.cnpj} {inv.emitente.uf ? `(${inv.emitente.uf})` : ''}
+                          </div>
+                        </td>
+
+                        {/* Destinatário */}
+                        <td className="py-2 px-3">
+                          <div className="font-bold text-[#141414] truncate max-w-[160px]" title={inv.destinatario.xNome}>
+                            {inv.destinatario.xNome}
+                          </div>
+                          <div className="text-[10px] text-[#141414]/60 font-mono">
+                            {inv.destinatario.cnpj}
+                          </div>
+                        </td>
+
+                        {/* Valor Total */}
+                        <td className="py-2 px-3 text-right font-bold font-mono text-[#141414]">
+                          R$ {inv.totais.vNF.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+
+                        {/* Quantidade Itens */}
+                        <td className="py-2 px-3 text-center font-bold text-[#141414]">
+                          {inv.itens.length}
+                        </td>
+
+                        {/* Chave de Acesso com Copiar Rápido */}
+                        <td className="py-2 px-3 text-center">
+                          <button
+                            onClick={() => handleCopyChave(inv.chaveAcesso)}
+                            className="px-2 py-0.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] border border-[#141414] rounded-xs text-[10px] font-mono flex items-center space-x-1 mx-auto"
+                            title="Clique para copiar a chave de acesso de 44 dígitos"
+                          >
+                            <span>{inv.chaveAcesso.slice(0, 6)}...{inv.chaveAcesso.slice(-4)}</span>
+                            {copiedKey === inv.chaveAcesso ? <Check className="w-3 h-3 text-[#141414]" /> : <Copy className="w-3 h-3 text-[#141414]/70" />}
+                          </button>
+                        </td>
+
+                        {/* Ações Rápidas: Copiar XML, Baixar XML, Ver Detalhes */}
+                        <td className="py-2 px-3 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end space-x-1">
+                            
+                            {/* Copiar XML Button */}
+                            <button
+                              onClick={() => handleCopyXml(inv)}
+                              className="p-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] rounded-xs border border-[#141414] transition"
+                              title="Copiar XML puro para a área de transferência"
+                            >
+                              {copiedXmlChave === inv.chaveAcesso ? (
+                                <Check className="w-3.5 h-3.5 text-green-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+
+                            {/* Baixar .XML Button */}
+                            <button
+                              onClick={() => handleDownloadSingleXml(inv)}
+                              className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
+                              title="Baixar arquivo .xml individual"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Ver XML Bruto */}
+                            <button
+                              onClick={() => setRawXmlModal({
+                                chave: inv.chaveAcesso,
+                                numero: inv.numero,
+                                xml: inv.xmlOriginal || inv.xmlRaw || SefazXmlParser.generateXml(inv)
+                              })}
+                              className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
+                              title="Visualizar código XML formatado"
+                            >
+                              <FileCode className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Ver Detalhes da Nota */}
+                            <button
+                              onClick={() => setSelectedInvoiceModal(inv)}
+                              className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
+                              title="Visualizar dados e produtos da nota fiscal"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Excluir Nota */}
+                            <button
+                              onClick={() => handleDeleteInvoice(inv.chaveAcesso)}
+                              className="p-1.5 bg-[#E4E3E0] hover:bg-red-200 text-[#141414] rounded-xs border border-[#141414] transition"
+                              title="Excluir nota do banco"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+
+                          </div>
+                        </td>
+
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* SUB-TAB 2: CERTIFICADO DIGITAL A1 */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'certificado' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          
+          {/* Active Certificate Card */}
+          <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
+            <div className="flex items-center justify-between border-b border-[#141414] pb-2">
+              <h3 className="font-bold text-[#141414] text-xs uppercase flex items-center space-x-1.5">
+                <FileKey className="w-3.5 h-3.5 text-[#141414]" />
+                <span>Certificado Digital A1 em Uso</span>
+              </h3>
+
+              {activeCertificate && (
+                <button
+                  onClick={handleUnlinkCert}
+                  className="text-[10px] font-bold uppercase text-red-700 hover:underline flex items-center space-x-1"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Desvincular</span>
+                </button>
+              )}
+            </div>
+
+            {activeCertificate ? (
+              <div className="space-y-2.5 text-xs">
+                
+                <div className="p-3 bg-[#E4E3E0] rounded-sm border border-[#141414] space-y-1.5">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <div className="text-[10px] text-[#141414]/70 uppercase font-bold">Razão Social Titular:</div>
+                      <div className="font-bold text-[#141414] text-sm">{activeCertificate.razaoSocial}</div>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-xs text-[10px] font-bold border border-[#141414] ${
+                      activeCertificate.status === 'VALIDO' ? 'bg-[#141414] text-[#E4E3E0]' : 'bg-[#E4E3E0] text-red-700'
+                    }`}>
+                      {activeCertificate.status}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#141414]/20 text-[11px]">
+                    <div>
+                      <span className="text-[#141414]/70 uppercase text-[10px] block">CNPJ:</span>
+                      <strong className="font-mono">{activeCertificate.cnpj}</strong>
+                    </div>
+                    <div>
+                      <span className="text-[#141414]/70 uppercase text-[10px] block">UF / Ambiente:</span>
+                      <strong>{activeCertificate.uf} - {activeCertificate.ambiente}</strong>
+                    </div>
                   </div>
                 </div>
+
+                <div className="space-y-1 text-[11px]">
+                  <div className="flex justify-between py-1 border-b border-[#141414]/15">
+                    <span className="text-[#141414]/70">Emissor Autorizado:</span>
+                    <span className="font-bold truncate max-w-[240px]">{activeCertificate.emissor}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-[#141414]/15">
+                    <span className="text-[#141414]/70">Validade Até:</span>
+                    <span className="font-bold">{new Date(activeCertificate.validadeFim).toLocaleDateString('pt-BR')} ({activeCertificate.diasRestantes} dias restantes)</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-[#141414]/15">
+                    <span className="text-[#141414]/70">Número de Série:</span>
+                    <span className="font-mono text-[10px]">{activeCertificate.numeroSerie}</span>
+                  </div>
+                  {activeCertificate.thumbprint && (
+                    <div className="flex justify-between py-1 border-b border-[#141414]/15">
+                      <span className="text-[#141414]/70">Thumbprint SHA-1:</span>
+                      <span className="font-mono text-[9px]">{activeCertificate.thumbprint}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between py-1">
+                    <span className="text-[#141414]/70">Chave Privada Decriptada:</span>
+                    <span className="font-bold">{activeCertificate.hasPrivateKey ? 'SIM (mTLS Ativo)' : 'NÃO'}</span>
+                  </div>
+                </div>
+
+              </div>
+            ) : (
+              <div className="p-6 text-center space-y-2 bg-[#E4E3E0] rounded-sm border border-[#141414]">
+                <KeyRound className="w-8 h-8 mx-auto text-[#141414]/50" />
+                <div className="font-bold uppercase text-xs text-[#141414]">Nenhum Certificado Vinculado</div>
+                <p className="text-[11px] text-[#141414]/70 font-sans">
+                  Faça o upload do arquivo .pfx com sua senha no formulário ao lado para habilitar a consulta direta de XMLs na SEFAZ.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Upload New Certificate Form */}
+          <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
+            <div className="flex items-center justify-between border-b border-[#141414] pb-2">
+              <h3 className="font-bold text-[#141414] text-xs uppercase flex items-center space-x-1.5">
+                <UploadCloud className="w-3.5 h-3.5 text-[#141414]" />
+                <span>Carregar / Atualizar Certificado A1 (.pfx)</span>
+              </h3>
+            </div>
+
+            <form onSubmit={handleUploadCert} className="space-y-2.5 text-xs">
+              
+              {/* File Input */}
+              <div className="space-y-0.5">
+                <label className="font-bold uppercase text-[10px] text-[#141414]/70">
+                  Arquivo do Certificado (.pfx / .p12):
+                </label>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleCertFileChange}
+                  accept=".pfx,.p12"
+                  className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-mono file:mr-2 file:py-1 file:px-2 file:rounded-xs file:border-0 file:text-xs file:font-bold file:bg-[#141414] file:text-[#E4E3E0] cursor-pointer"
+                />
               </div>
 
               {/* Password */}
-              <div>
-                <label className="block text-[11px] font-mono font-bold uppercase text-[#141414] mb-1">
+              <div className="space-y-0.5">
+                <label className="font-bold uppercase text-[10px] text-[#141414]/70">
                   Senha do Certificado Digital:
                 </label>
                 <div className="relative">
                   <input
-                    id="input-cert-password"
                     type={showPassword ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Digite a senha de proteção do arquivo .pfx"
-                    className="w-full bg-[#E4E3E0] border border-[#141414] px-3 py-2 text-xs font-mono rounded-sm focus:outline-none focus:ring-1 focus:ring-[#141414] pr-9 text-[#141414]"
+                    value={certPassword}
+                    onChange={(e) => setCertPassword(e.target.value)}
+                    placeholder="Digite a senha do certificado A1..."
+                    className="w-full p-2 pr-9 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold text-[#141414] focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-2.5 top-2.5 text-[#141414]/60 hover:text-[#141414]"
-                    title={showPassword ? 'Ocultar senha' : 'Ver senha'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#141414]/60 hover:text-[#141414]"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
 
-              {/* UF and Environment Controls */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-mono font-bold uppercase text-[#141414] mb-1">
-                    UF do Emitente:
-                  </label>
+              {/* UF & Ambiente */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-0.5">
+                  <label className="font-bold uppercase text-[10px] text-[#141414]/70">UF da Empresa:</label>
                   <select
-                    id="select-cert-uf"
-                    value={uf}
-                    onChange={(e) => setUf(e.target.value)}
-                    className="w-full bg-[#E4E3E0] border border-[#141414] px-2.5 py-1.5 text-xs font-mono rounded-sm font-bold uppercase focus:outline-none text-[#141414]"
+                    value={certUf}
+                    onChange={(e) => setCertUf(e.target.value)}
+                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm font-bold text-xs"
                   >
-                    {['SP', 'MG', 'RJ', 'RS', 'PR', 'SC', 'BA', 'GO', 'DF', 'ES', 'PE', 'CE', 'MT', 'MS', 'PA', 'PB', 'RN', 'AL', 'SE', 'PI', 'MA', 'TO', 'RO', 'AC', 'AM', 'RR', 'AP'].map(u => (
-                      <option key={u} value={u}>UF: {u}</option>
+                    {['SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'PE', 'CE', 'GO', 'ES', 'MT', 'MS', 'DF', 'AM', 'PA', 'MA', 'PB', 'RN', 'AL', 'SE', 'PI', 'TO', 'RO', 'AC', 'AP', 'RR'].map(st => (
+                      <option key={st} value={st}>{st}</option>
                     ))}
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-[11px] font-mono font-bold uppercase text-[#141414] mb-1">
-                    Ambiente SEFAZ:
-                  </label>
+                <div className="space-y-0.5">
+                  <label className="font-bold uppercase text-[10px] text-[#141414]/70">Ambiente:</label>
                   <select
-                    id="select-cert-ambiente"
-                    value={ambiente}
-                    onChange={(e) => setAmbiente(e.target.value as any)}
-                    className="w-full bg-[#E4E3E0] border border-[#141414] px-2.5 py-1.5 text-xs font-mono rounded-sm font-bold uppercase focus:outline-none text-[#141414]"
+                    value={certAmbiente}
+                    onChange={(e) => setCertAmbiente(e.target.value as any)}
+                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm font-bold text-xs"
                   >
-                    <option value="PRODUCAO">PRODUÇÃO (DADOS REAIS)</option>
-                    <option value="HOMOLOGACAO">HOMOLOGAÇÃO (TESTES)</option>
+                    <option value="PRODUCAO">Produção (SEFAZ Oficial)</option>
+                    <option value="HOMOLOGACAO">Homologação (Testes)</option>
                   </select>
                 </div>
               </div>
 
-              {/* Submit Button */}
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  id="btn-verify-cert"
-                  disabled={isLoading || !selectedFile || !password}
-                  className="w-full flex items-center justify-center space-x-2 bg-[#141414] hover:bg-[#2c2c2c] text-[#E4E3E0] py-2.5 px-4 rounded-sm text-xs font-mono font-bold uppercase tracking-wider border border-[#141414] transition disabled:opacity-50 active:scale-98"
-                >
-                  {isLoading ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Descriptografando PKCS#12...</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                      <span>Validar & Ativar Certificado A1</span>
-                    </>
-                  )}
-                </button>
+              <div className="p-2 bg-[#E4E3E0] rounded-sm border border-[#141414] text-[10px] text-[#141414]/80">
+                🔒 <strong>Validação Criptográfica:</strong> O arquivo .pfx é decriptado usando a biblioteca PKCS#12 e registrado na sessão para autenticação mTLS direta com os servidores da SEFAZ.
               </div>
 
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-2 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-2 border border-[#141414] disabled:opacity-50"
+              >
+                <ShieldCheck className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                <span>{isLoading ? 'Decriptando Certificado...' : 'Validar e Ativar Certificado A1'}</span>
+              </button>
             </form>
-          </div>
-
-          {/* Right Column: Active Certificate Details & ICP-Brasil Inspector */}
-          <div className="lg:col-span-6 bg-[#F0EFED] border border-[#141414] p-4 rounded-sm flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between border-b border-[#141414]/15 pb-2 mb-3">
-                <h2 className="text-xs font-mono font-bold uppercase text-[#141414] flex items-center space-x-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>Inspeção do Certificado Digital Ativo</span>
-                </h2>
-                {activeCertificate && (
-                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-xs font-bold uppercase border ${
-                    activeCertificate.status === 'VALIDO'
-                      ? 'bg-emerald-100 text-emerald-800 border-emerald-600'
-                      : 'bg-red-100 text-red-800 border-red-600'
-                  }`}>
-                    {activeCertificate.status}
-                  </span>
-                )}
-              </div>
-
-              {activeCertificate ? (
-                <div className="space-y-3 font-mono text-xs">
-                  
-                  {/* Company & CNPJ Card */}
-                  <div className="bg-[#E4E3E0] border border-[#141414] p-3 rounded-sm space-y-1.5">
-                    <div className="text-[10px] text-[#141414]/60 uppercase font-bold">Razão Social / Titular:</div>
-                    <div className="text-sm font-bold text-[#141414]">{activeCertificate.razaoSocial}</div>
-                    
-                    <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#141414]/15 text-[11px]">
-                      <div>
-                        <span className="text-[#141414]/60 uppercase block text-[10px]">CNPJ do Certificado:</span>
-                        <span className="font-bold text-[#141414]">{activeCertificate.cnpj}</span>
-                      </div>
-                      <div>
-                        <span className="text-[#141414]/60 uppercase block text-[10px]">Tipo de Certificado:</span>
-                        <span className="font-bold text-[#141414]">ICP-Brasil A1 (Software)</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Issuer & Serial */}
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
-                    <div className="bg-[#E4E3E0] border border-[#141414] p-2 rounded-sm">
-                      <span className="text-[#141414]/60 uppercase block text-[10px] font-bold">Autoridade Emissora:</span>
-                      <span className="font-bold text-[#141414] truncate block" title={activeCertificate.emissor}>
-                        {activeCertificate.emissor}
-                      </span>
-                    </div>
-
-                    <div className="bg-[#E4E3E0] border border-[#141414] p-2 rounded-sm">
-                      <span className="text-[#141414]/60 uppercase block text-[10px] font-bold">Número de Série:</span>
-                      <span className="font-bold text-[#141414] truncate block" title={activeCertificate.numeroSerie}>
-                        {activeCertificate.numeroSerie}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Validity Bar */}
-                  <div className="bg-[#E4E3E0] border border-[#141414] p-3 rounded-sm space-y-1.5">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="font-bold uppercase text-[10px] text-[#141414]/70">Período de Validade:</span>
-                      <span className="font-bold text-emerald-700 bg-emerald-100 border border-emerald-300 px-1.5 py-0.2 rounded-xs text-[10px]">
-                        {activeCertificate.diasRestantes} dias restantes
-                      </span>
-                    </div>
-                    
-                    <div className="flex items-center justify-between text-[11px] font-bold">
-                      <span>De: {new Date(activeCertificate.validadeInicio).toLocaleDateString('pt-BR')}</span>
-                      <span>Até: {new Date(activeCertificate.validadeFim).toLocaleDateString('pt-BR')}</span>
-                    </div>
-
-                    <div className="w-full bg-[#141414]/20 h-1.5 rounded-full overflow-hidden">
-                      <div 
-                        className="bg-emerald-600 h-full rounded-full" 
-                        style={{ width: `${Math.min(100, Math.max(5, (activeCertificate.diasRestantes / 365) * 100))}%` }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  {/* Security Key status */}
-                  <div className="flex items-center justify-between text-[11px] bg-[#E4E3E0] border border-[#141414] px-2.5 py-1.5 rounded-sm">
-                    <span className="text-[#141414]/70 font-bold uppercase text-[10px]">Chave Privada & mTLS:</span>
-                    <span className="font-bold text-emerald-700 flex items-center space-x-1">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Descriptografada & Pronta</span>
-                    </span>
-                  </div>
-
-                </div>
-              ) : (
-                <div className="bg-[#E4E3E0] border border-dashed border-[#141414] p-8 rounded-sm text-center flex flex-col items-center justify-center space-y-2 text-[#141414]/70 font-mono text-xs">
-                  <FileKey className="w-8 h-8 text-[#141414]/40" />
-                  <p className="font-bold uppercase">Nenhum certificado A1 carregado no momento</p>
-                  <p className="text-[11px] text-[#141414]/60 max-w-sm">
-                    Envie seu arquivo .pfx e digite a senha ao lado para habilitar a consulta direta de notas na SEFAZ.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Actions for Active Cert */}
-            {activeCertificate && (
-              <div className="pt-4 border-t border-[#141414]/15 flex items-center space-x-2">
-                <button
-                  id="btn-goto-faturamento"
-                  onClick={() => {
-                    setActiveSubTab('faturamento');
-                    handleFetchFaturamento();
-                  }}
-                  className="flex-1 bg-[#141414] hover:bg-[#2c2c2c] text-[#E4E3E0] py-2 px-3 rounded-sm text-xs font-mono font-bold uppercase tracking-wider border border-[#141414] flex items-center justify-center space-x-1.5 transition active:scale-98"
-                >
-                  <Receipt className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Puxar Faturamento da SEFAZ</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  id="btn-unlink-cert"
-                  onClick={handleUnlinkCertificate}
-                  className="bg-[#E4E3E0] hover:bg-red-100 text-red-800 border border-[#141414] py-2 px-3 rounded-sm text-xs font-mono font-bold uppercase transition"
-                  title="Desvincular certificado"
-                >
-                  Desvincular
-                </button>
-              </div>
-            )}
-
           </div>
 
         </div>
       )}
 
-      {/* TAB 2: FATURAMENTO & SEFAZ INVOICE EXTRACTION */}
-      {activeSubTab === 'faturamento' && (
-        <div className="space-y-4">
-          
-          {/* Query Control Bar */}
-          <div className="bg-[#F0EFED] border border-[#141414] p-3.5 rounded-sm">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-              
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center space-x-1.5 bg-[#E4E3E0] border border-[#141414] px-2.5 py-1.5 rounded-sm text-xs font-mono font-bold">
-                  <Calendar className="w-3.5 h-3.5 text-[#141414]" />
-                  <span className="text-[10px] text-[#141414]/60 uppercase">Período:</span>
-                  <select
-                    id="select-faturamento-periodo"
-                    value={periodoFaturamento}
-                    onChange={(e) => setPeriodoFaturamento(e.target.value)}
-                    className="bg-transparent text-[#141414] font-bold focus:outline-none cursor-pointer uppercase text-xs"
-                  >
-                    <option value="ULTIMOS_30_DIAS">Últimos 30 Dias</option>
-                    <option value="MES_ATUAL">Mês Atual</option>
-                    <option value="ANO_ATUAL">Ano Atual</option>
-                  </select>
-                </div>
+      {/* ========================================================================= */}
+      {/* SUB-TAB 3: STATUS WEBSERVICE SEFAZ */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'status_sefaz' && (
+        <div className="bg-[#F0EFED] p-4 rounded-sm border border-[#141414] space-y-4">
+          <div className="flex items-center justify-between border-b border-[#141414] pb-2">
+            <h3 className="font-bold text-[#141414] text-xs uppercase flex items-center space-x-1.5">
+              <ShieldCheck className="w-4 h-4 text-[#141414]" />
+              <span>Status dos WebServices SEFAZ Nacional e Estaduais</span>
+            </h3>
 
-                <div className="flex items-center space-x-1.5 bg-[#E4E3E0] border border-[#141414] px-2.5 py-1.5 rounded-sm text-xs font-mono font-bold">
-                  <span className="text-[10px] text-[#141414]/60 uppercase">Tipo:</span>
-                  <select
-                    id="select-faturamento-tipo"
-                    value={tipoDocFaturamento}
-                    onChange={(e) => setTipoDocFaturamento(e.target.value as any)}
-                    className="bg-transparent text-[#141414] font-bold focus:outline-none cursor-pointer uppercase text-xs"
-                  >
-                    <option value="TODAS">Todas as Notas (Vendas & Compras)</option>
-                    <option value="EMITIDAS">Apenas NF-e Emitidas (Vendas)</option>
-                    <option value="RECEBIDAS">Apenas NF-e Recebidas (Compras Fornecedor)</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center space-x-2">
-                <button
-                  id="btn-fetch-faturamento"
-                  onClick={() => handleFetchFaturamento()}
-                  disabled={isFetchingFaturamento || !activeCertificate}
-                  className="flex items-center space-x-1.5 bg-[#141414] hover:bg-[#2c2c2c] text-[#E4E3E0] px-3.5 py-1.5 rounded-sm text-xs font-mono font-bold uppercase tracking-wider border border-[#141414] transition disabled:opacity-50 active:scale-98"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isFetchingFaturamento ? 'animate-spin' : ''}`} />
-                  <span>{isFetchingFaturamento ? 'Consultando SEFAZ...' : 'Puxar Faturamento da SEFAZ'}</span>
-                </button>
-
-                {faturamentoReport && (
-                  <button
-                    id="btn-apply-sefaz-to-system"
-                    onClick={handleSyncWithSystem}
-                    className="flex items-center space-x-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-3.5 py-1.5 rounded-sm text-xs font-mono font-bold uppercase tracking-wider border border-emerald-900 transition active:scale-98"
-                    title="Alimentar todos os módulos (Conferência de MKP, EAN e Prazos) com as notas da SEFAZ"
-                  >
-                    <Layers className="w-3.5 h-3.5" />
-                    <span>Sincronizar com MKP & PDV</span>
-                  </button>
-                )}
-              </div>
-
-            </div>
+            <button
+              onClick={checkStatus}
+              className="px-3 py-1 bg-[#141414] text-[#E4E3E0] text-xs font-bold uppercase rounded-xs hover:bg-[#2a2a2a] transition flex items-center space-x-1"
+            >
+              <RefreshCw className="w-3 h-3" />
+              <span>Testar Status</span>
+            </button>
           </div>
 
-          {/* Faturamento Summary KPI Cards */}
-          {faturamentoReport ? (
-            <div className="space-y-4">
-              
-              {/* Financial Top Stats */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                
-                {/* Vendas Faturadas */}
-                <div className="bg-[#F0EFED] border border-[#141414] p-3 rounded-sm">
-                  <div className="flex items-center justify-between text-[#141414]/60 text-[10px] font-mono font-bold uppercase">
-                    <span>Faturamento Emitido (Vendas)</span>
-                    <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
-                  </div>
-                  <div className="text-lg font-bold font-mono text-[#141414] mt-1">
-                    {formatMoney(faturamentoReport.totalVendasFaturadas)}
-                  </div>
-                  <div className="text-[10px] font-mono text-[#141414]/70 mt-0.5">
-                    {faturamentoReport.totalNotasEmitidas} NF-e de saída emitidas
-                  </div>
-                </div>
-
-                {/* Compras Fornecedores */}
-                <div className="bg-[#F0EFED] border border-[#141414] p-3 rounded-sm">
-                  <div className="flex items-center justify-between text-[#141414]/60 text-[10px] font-mono font-bold uppercase">
-                    <span>Compras (Entrada Fornecedores)</span>
-                    <Truck className="w-3.5 h-3.5 text-indigo-600" />
-                  </div>
-                  <div className="text-lg font-bold font-mono text-[#141414] mt-1">
-                    {formatMoney(faturamentoReport.totalComprasFornecedores)}
-                  </div>
-                  <div className="text-[10px] font-mono text-[#141414]/70 mt-0.5">
-                    {faturamentoReport.totalNotasRecebidas} NF-e de fornecedores
-                  </div>
-                </div>
-
-                {/* Impostos Totais Faturados */}
-                <div className="bg-[#F0EFED] border border-[#141414] p-3 rounded-sm">
-                  <div className="flex items-center justify-between text-[#141414]/60 text-[10px] font-mono font-bold uppercase">
-                    <span>ICMS + PIS/COFINS Faturados</span>
-                    <Receipt className="w-3.5 h-3.5 text-amber-600" />
-                  </div>
-                  <div className="text-lg font-bold font-mono text-[#141414] mt-1">
-                    {formatMoney(faturamentoReport.impostosTotais.icms + faturamentoReport.impostosTotais.pis + faturamentoReport.impostosTotais.cofins)}
-                  </div>
-                  <div className="text-[10px] font-mono text-[#141414]/70 mt-0.5">
-                    ICMS: {formatMoney(faturamentoReport.impostosTotais.icms)}
-                  </div>
-                </div>
-
-                {/* Saldo Líquido de Mercadorias */}
-                <div className="bg-[#F0EFED] border border-[#141414] p-3 rounded-sm">
-                  <div className="flex items-center justify-between text-[#141414]/60 text-[10px] font-mono font-bold uppercase">
-                    <span>Margem Bruta Faturada</span>
-                    <Sparkles className="w-3.5 h-3.5 text-[#141414]" />
-                  </div>
-                  <div className="text-lg font-bold font-mono text-[#141414] mt-1">
-                    {faturamentoReport.totalVendasFaturadas > 0 ? (
-                      `${(((faturamentoReport.totalVendasFaturadas - (faturamentoReport.totalComprasFornecedores * 0.45)) / faturamentoReport.totalVendasFaturadas) * 100).toFixed(1)}%`
-                    ) : '0%'}
-                  </div>
-                  <div className="text-[10px] font-mono text-[#141414]/70 mt-0.5">
-                    Média de Markup ponderada
-                  </div>
-                </div>
-
+          {sefazStatus && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm space-y-1">
+                <div className="text-[10px] text-[#141414]/70 uppercase font-bold">Código Retorno SEFAZ:</div>
+                <div className="text-sm font-bold text-[#141414]">cStat {sefazStatus.cStat} - {sefazStatus.xMotivo}</div>
+                <div className="text-[10px] text-[#141414]/70">Tempo de Resposta: {sefazStatus.tempoRespostaMs}ms</div>
               </div>
 
-              {/* Invoices List Table */}
-              <div className="bg-[#F0EFED] border border-[#141414] rounded-sm overflow-hidden">
-                <div className="p-3 border-b border-[#141414] flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-xs font-mono font-bold uppercase text-[#141414]">
-                      Extrato Analítico de Documentos Fiscais SEFAZ ({filteredInvoices.length} Notas)
-                    </span>
-                  </div>
-                  
-                  <div className="text-[10px] font-mono text-[#141414]/60">
-                    CNPJ: <span className="font-bold text-[#141414]">{faturamentoReport.cnpj}</span>
-                  </div>
+              <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm space-y-1">
+                <div className="text-[10px] text-[#141414]/70 uppercase font-bold">WebService Ativo:</div>
+                <div className="text-xs font-bold text-[#141414] font-mono break-all">{sefazStatus.webservice}</div>
+                <div className="text-[10px] text-[#141414]/70">Ambiente: {certAmbiente} | UF: {certUf}</div>
+              </div>
+
+              <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm space-y-1">
+                <div className="text-[10px] text-[#141414]/70 uppercase font-bold">Disponibilidade:</div>
+                <div className="text-sm font-bold text-[#141414] flex items-center space-x-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-600 inline-block"></span>
+                  <span>ONLINE / OPERACIONAL</span>
+                </div>
+                <div className="text-[10px] text-[#141414]/70">Última checagem: {new Date(sefazStatus.dhRecbto).toLocaleTimeString('pt-BR')}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: RAW FORMATTED XML VIEWER & COPIER */}
+      {/* ========================================================================= */}
+      {rawXmlModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-5">
+          <div className="bg-[#F0EFED] border border-[#141414] rounded-sm max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl font-mono">
+            
+            {/* Modal Header */}
+            <div className="p-3.5 bg-[#141414] text-[#E4E3E0] flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <FileCode className="w-4 h-4" />
+                <span className="font-bold text-xs uppercase">Código XML da NF-e {rawXmlModal.numero}</span>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(rawXmlModal.xml);
+                    setCopiedXmlChave(rawXmlModal.chave);
+                    setTimeout(() => setCopiedXmlChave(null), 3000);
+                  }}
+                  className="px-2.5 py-1 bg-[#E4E3E0] hover:bg-white text-[#141414] font-bold text-[10px] uppercase rounded-xs transition flex items-center space-x-1"
+                >
+                  {copiedXmlChave === rawXmlModal.chave ? <Check className="w-3 h-3 text-green-700" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedXmlChave === rawXmlModal.chave ? 'XML Copiado!' : 'Copiar XML'}</span>
+                </button>
+
+                <button
+                  onClick={() => setRawXmlModal(null)}
+                  className="text-[#E4E3E0] hover:text-white text-sm font-bold px-1.5"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* XML Body */}
+            <div className="p-3 overflow-y-auto flex-1 bg-[#1e1e1e] text-[#d4d4d4] text-[11px] font-mono leading-relaxed select-all">
+              <pre className="whitespace-pre-wrap break-all">{rawXmlModal.xml}</pre>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-2.5 bg-[#E4E3E0] border-t border-[#141414] flex justify-between items-center text-[11px]">
+              <span className="text-[#141414]/70">Chave: {rawXmlModal.chave}</span>
+              <button
+                onClick={() => setRawXmlModal(null)}
+                className="px-3 py-1 bg-[#141414] text-[#E4E3E0] font-bold text-xs uppercase rounded-xs"
+              >
+                Fechar
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: INVOICE DETAILS & PRODUCTS */}
+      {/* ========================================================================= */}
+      {selectedInvoiceModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-5">
+          <div className="bg-[#F0EFED] border border-[#141414] rounded-sm max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl font-mono">
+            
+            {/* Header */}
+            <div className="p-3.5 bg-[#141414] text-[#E4E3E0] flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Receipt className="w-4 h-4" />
+                <span className="font-bold text-xs uppercase">
+                  Detalhes da NF-e {selectedInvoiceModal.numero} (Série {selectedInvoiceModal.serie})
+                </span>
+              </div>
+              <button
+                onClick={() => setSelectedInvoiceModal(null)}
+                className="text-[#E4E3E0] hover:text-white text-sm font-bold px-1.5"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-4 overflow-y-auto flex-1 space-y-3.5 text-xs">
+              
+              {/* Top Info Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* Emitente */}
+                <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm space-y-1">
+                  <div className="text-[10px] text-[#141414]/70 uppercase font-bold">Emitente / Fornecedor:</div>
+                  <div className="font-bold text-sm text-[#141414]">{selectedInvoiceModal.emitente.xNome}</div>
+                  <div className="text-[11px] text-[#141414]/80">CNPJ: {selectedInvoiceModal.emitente.cnpj} {selectedInvoiceModal.emitente.ie ? `| IE: ${selectedInvoiceModal.emitente.ie}` : ''}</div>
+                  <div className="text-[11px] text-[#141414]/80">{selectedInvoiceModal.emitente.municipio || ''} - {selectedInvoiceModal.emitente.uf}</div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left font-mono text-xs border-collapse">
+                {/* Destinatário */}
+                <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm space-y-1">
+                  <div className="text-[10px] text-[#141414]/70 uppercase font-bold">Destinatário:</div>
+                  <div className="font-bold text-sm text-[#141414]">{selectedInvoiceModal.destinatario.xNome}</div>
+                  <div className="text-[11px] text-[#141414]/80">CNPJ/CPF: {selectedInvoiceModal.destinatario.cnpj}</div>
+                  <div className="text-[11px] text-[#141414]/80">{selectedInvoiceModal.destinatario.uf || ''}</div>
+                </div>
+              </div>
+
+              {/* Chave de Acesso */}
+              <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-[#141414]/70 uppercase font-bold block">Chave de Acesso:</span>
+                  <span className="font-mono text-xs font-bold text-[#141414]">{selectedInvoiceModal.chaveAcesso}</span>
+                </div>
+                <button
+                  onClick={() => handleCopyChave(selectedInvoiceModal.chaveAcesso)}
+                  className="px-2 py-1 bg-[#141414] text-[#E4E3E0] text-[10px] uppercase font-bold rounded-xs flex items-center space-x-1"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Copiar Chave</span>
+                </button>
+              </div>
+
+              {/* Products Table */}
+              <div className="space-y-1.5">
+                <div className="font-bold text-xs uppercase text-[#141414]">
+                  Itens / Produtos da Nota ({selectedInvoiceModal.itens.length}):
+                </div>
+                <div className="border border-[#141414] rounded-sm overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
                     <thead>
-                      <tr className="bg-[#E4E3E0] border-b border-[#141414] text-[10px] font-bold uppercase text-[#141414]">
-                        <th className="p-2 border-r border-[#141414]/20">Tipo</th>
-                        <th className="p-2 border-r border-[#141414]/20">Número / Série</th>
-                        <th className="p-2 border-r border-[#141414]/20">Data Emissão</th>
-                        <th className="p-2 border-r border-[#141414]/20">Emitente (Fornecedor)</th>
-                        <th className="p-2 border-r border-[#141414]/20">Destinatário (Cliente)</th>
-                        <th className="p-2 border-r border-[#141414]/20 text-right">Valor Total</th>
-                        <th className="p-2 border-r border-[#141414]/20">Chave de Acesso</th>
-                        <th className="p-2 text-center">Itens</th>
+                      <tr className="bg-[#141414] text-[#E4E3E0] text-[10px] uppercase">
+                        <th className="py-2 px-2.5">Item</th>
+                        <th className="py-2 px-2.5">Código / EAN</th>
+                        <th className="py-2 px-2.5">Descrição do Produto</th>
+                        <th className="py-2 px-2.5">NCM / CFOP</th>
+                        <th className="py-2 px-2.5 text-right">Qtd</th>
+                        <th className="py-2 px-2.5 text-right">Vlr Unit</th>
+                        <th className="py-2 px-2.5 text-right">Vlr Total</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#141414]/15">
-                      {filteredInvoices.map((inv, idx) => {
-                        const isVenda = inv.emitente.cnpj.replace(/\D/g, '') === faturamentoReport.cnpj.replace(/\D/g, '');
-                        return (
-                          <tr key={inv.chaveAcesso || inv.id || `sefaz-inv-${idx}`} className="hover:bg-[#E4E3E0]/70 transition-colors">
-                            <td className="p-2 border-r border-[#141414]/20">
-                              <span className={`text-[9px] px-1.5 py-0.5 rounded-xs font-bold uppercase border ${
-                                isVenda 
-                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-500' 
-                                  : 'bg-indigo-100 text-indigo-800 border-indigo-500'
-                              }`}>
-                                {isVenda ? 'VENDA (SAÍDA)' : 'COMPRA (ENTRADA)'}
-                              </span>
-                            </td>
-                            <td className="p-2 border-r border-[#141414]/20 font-bold">
-                              NF-e {inv.numero} <span className="text-[10px] text-[#141414]/60">S.{inv.serie}</span>
-                            </td>
-                            <td className="p-2 border-r border-[#141414]/20 text-[11px]">
-                              {new Date(inv.dataEmissao).toLocaleDateString('pt-BR')} {new Date(inv.dataEmissao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                            </td>
-                            <td className="p-2 border-r border-[#141414]/20 text-[11px] truncate max-w-[200px]" title={inv.emitente.xNome}>
-                              {inv.emitente.xNome}
-                            </td>
-                            <td className="p-2 border-r border-[#141414]/20 text-[11px] truncate max-w-[180px]" title={inv.destinatario.xNome}>
-                              {inv.destinatario.xNome}
-                            </td>
-                            <td className="p-2 border-r border-[#141414]/20 text-right font-bold text-[#141414]">
-                              {formatMoney(inv.totais.vNF)}
-                            </td>
-                            <td className="p-2 border-r border-[#141414]/20 text-[10px] text-[#141414]/70">
-                              <div className="flex items-center space-x-1">
-                                <span className="truncate max-w-[120px]" title={inv.chaveAcesso}>
-                                  {inv.chaveAcesso.slice(0, 6)}...{inv.chaveAcesso.slice(-6)}
-                                </span>
-                                <button
-                                  onClick={() => handleCopy(inv.chaveAcesso, inv.id)}
-                                  className="p-0.5 hover:bg-[#141414] hover:text-[#E4E3E0] rounded-xs transition"
-                                  title="Copiar chave de acesso"
-                                >
-                                  {copiedKey === inv.id ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                                </button>
-                              </div>
-                            </td>
-                            <td className="p-2 text-center">
-                              <span className="bg-[#141414] text-[#E4E3E0] text-[10px] font-bold px-1.5 py-0.2 rounded-xs">
-                                {inv.itens.length} {inv.itens.length === 1 ? 'item' : 'itens'}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                    <tbody className="divide-y divide-[#141414]/15 bg-[#E4E3E0]/40">
+                      {selectedInvoiceModal.itens.map((it) => (
+                        <tr key={it.nItem} className="hover:bg-[#E4E3E0]">
+                          <td className="py-1.5 px-2.5 font-bold">{it.nItem}</td>
+                          <td className="py-1.5 px-2.5 font-mono text-[10px]">{it.cProd} {it.cEAN ? `| EAN: ${it.cEAN}` : ''}</td>
+                          <td className="py-1.5 px-2.5 font-bold text-[#141414]">{it.xProd}</td>
+                          <td className="py-1.5 px-2.5 font-mono text-[10px]">{it.NCM} / {it.CFOP}</td>
+                          <td className="py-1.5 px-2.5 text-right font-bold">{it.qCom} {it.uCom}</td>
+                          <td className="py-1.5 px-2.5 text-right font-mono">R$ {it.vUnCom.toFixed(2)}</td>
+                          <td className="py-1.5 px-2.5 text-right font-mono font-bold">R$ {it.vProd.toFixed(2)}</td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
               </div>
 
-            </div>
-          ) : (
-            <div className="bg-[#F0EFED] border border-dashed border-[#141414] p-10 rounded-sm text-center flex flex-col items-center justify-center space-y-3 font-mono">
-              <Receipt className="w-10 h-10 text-[#141414]/40" />
-              <div className="space-y-1">
-                <p className="text-sm font-bold uppercase text-[#141414]">Nenhum faturamento consultado ainda</p>
-                <p className="text-xs text-[#141414]/60 max-w-md">
-                  Clique no botão <span className="font-bold text-[#141414]">"Puxar Faturamento da SEFAZ"</span> acima para extrair em tempo real todas as notas fiscais emitidas e recebidas para o CNPJ do certificado.
-                </p>
-              </div>
-              <button
-                onClick={() => handleFetchFaturamento()}
-                disabled={isFetchingFaturamento || !activeCertificate}
-                className="bg-[#141414] hover:bg-[#2c2c2c] text-[#E4E3E0] px-4 py-2 rounded-sm text-xs font-mono font-bold uppercase tracking-wider border border-[#141414] transition disabled:opacity-50"
-              >
-                Puxar Faturamento da SEFAZ Agora
-              </button>
-            </div>
-          )}
+              {/* Duplicatas / Prazos */}
+              {selectedInvoiceModal.duplicatas && selectedInvoiceModal.duplicatas.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="font-bold text-xs uppercase text-[#141414]">
+                    Faturas / Duplicatas de Pagamento:
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {selectedInvoiceModal.duplicatas.map((dup, idx) => (
+                      <div key={idx} className="p-2 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs space-y-0.5">
+                        <div className="text-[10px] text-[#141414]/70 font-bold uppercase">Parcela {dup.nDup}:</div>
+                        <div className="font-bold text-sm font-mono text-[#141414]">R$ {dup.vDup.toFixed(2)}</div>
+                        <div className="text-[10px] text-[#141414]/80">Vence: {dup.dVenc ? new Date(dup.dVenc).toLocaleDateString('pt-BR') : 'À Vista'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-        </div>
-      )}
-
-      {/* TAB 3: SEFAZ WEBSERVICES DIAGNOSTIC */}
-      {activeSubTab === 'status_sefaz' && (
-        <div className="bg-[#F0EFED] border border-[#141414] p-4 rounded-sm space-y-4 font-mono text-xs">
-          <div className="flex items-center justify-between border-b border-[#141414]/15 pb-2">
-            <h2 className="text-xs font-bold uppercase text-[#141414] flex items-center space-x-1.5">
-              <RefreshCw className="w-4 h-4 text-[#141414]" />
-              <span>Diagnóstico de Conexão com os Servidores da SEFAZ</span>
-            </h2>
-            <button
-              onClick={checkStatus}
-              className="flex items-center space-x-1 bg-[#E4E3E0] hover:bg-[#d8d7d4] text-[#141414] px-2.5 py-1 rounded-sm border border-[#141414] text-[10px] font-bold uppercase"
-            >
-              <RefreshCw className="w-3 h-3" />
-              <span>Testar Novamente</span>
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            
-            {/* Status Panel */}
-            <div className="bg-[#E4E3E0] border border-[#141414] p-3 rounded-sm space-y-2">
-              <span className="text-[10px] font-bold uppercase text-[#141414]/60 block">Status da SEFAZ ({uf}):</span>
-              <div className="flex items-center space-x-2 text-sm font-bold text-emerald-800">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                <span>cStat 107 - Serviço em Operação</span>
-              </div>
-              <div className="text-[11px] text-[#141414]/80">
-                Tempo de Resposta: <span className="font-bold text-[#141414]">{sefazStatus?.tempoRespostaMs || 180} ms</span>
-              </div>
-              <div className="text-[10px] text-[#141414]/60 break-all">
-                Endpoint WebService: {sefazStatus?.webservice || `https://nfe.fazenda.${uf.toLowerCase()}.gov.br/ws/NFeStatusServico4.asmx`}
-              </div>
             </div>
 
-            {/* Protocols & Security */}
-            <div className="bg-[#E4E3E0] border border-[#141414] p-3 rounded-sm space-y-2">
-              <span className="text-[10px] font-bold uppercase text-[#141414]/60 block">Parâmetros de Segurança & Protocolo:</span>
-              <ul className="space-y-1 text-[11px]">
-                <li className="flex items-center justify-between">
-                  <span>Protocolo TLS:</span>
-                  <span className="font-bold">TLS 1.2 / TLS 1.3</span>
-                </li>
-                <li className="flex items-center justify-between">
-                  <span>Autenticação Mútua:</span>
-                  <span className="font-bold text-emerald-700">mTLS Habilitado (A1)</span>
-                </li>
-                <li className="flex items-center justify-between">
-                  <span>Layout NF-e / NFC-e:</span>
-                  <span className="font-bold">Versão 4.00 Oficial</span>
-                </li>
-                <li className="flex items-center justify-between">
-                  <span>Ambiente:</span>
-                  <span className="font-bold">{ambiente}</span>
-                </li>
-              </ul>
+            {/* Footer */}
+            <div className="p-3 bg-[#E4E3E0] border-t border-[#141414] flex justify-between items-center">
+              <div className="text-xs font-bold text-[#141414]">
+                Valor Total da Nota: R$ {selectedInvoiceModal.totais.vNF.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => handleCopyXml(selectedInvoiceModal)}
+                  className="px-3 py-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copiar XML</span>
+                </button>
+                <button
+                  onClick={() => handleDownloadSingleXml(selectedInvoiceModal)}
+                  className="px-3 py-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Baixar .XML</span>
+                </button>
+              </div>
             </div>
 
           </div>
