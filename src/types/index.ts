@@ -59,9 +59,16 @@ export interface SefazItem {
   vSeg: number;
   vDesc: number;
   vOutro: number;
+  // Impostos & Tributos detalhados do item
   vIPI: number;
+  pIPI?: number;
   vICMS: number;
+  pICMS?: number;
+  vBCICMS?: number;
+  cstICMS?: string;
+  orig?: string;
   vICMSST: number;
+  vBCST?: number;
   vPIS: number;
   vCOFINS: number;
   
@@ -140,19 +147,53 @@ export interface SefazInvoice {
   eventosFiscais?: SefazFiscalEvent[];
   nsu?: string;
   schema?: string;
+  naturezaOperacao?: string;
+  protocoloAutorizacao?: {
+    nProt?: string;
+    dhRecbto?: string;
+  };
   emitente: {
     cnpj: string;
     xNome: string;
     xFant?: string;
     ie?: string;
+    im?: string;
+    ieST?: string;
     uf: string;
     municipio?: string;
+    logradouro?: string;
+    numero?: string;
+    complemento?: string;
+    bairro?: string;
+    cep?: string;
+    fone?: string;
   };
   destinatario: {
     cnpj: string;
     xNome: string;
     ie?: string;
     uf?: string;
+    municipio?: string;
+    logradouro?: string;
+    numero?: string;
+    complemento?: string;
+    bairro?: string;
+    cep?: string;
+    fone?: string;
+    email?: string;
+  };
+  localEntrega?: {
+    cnpj?: string;
+    xNome?: string;
+    ie?: string;
+    logradouro?: string;
+    numero?: string;
+    complemento?: string;
+    bairro?: string;
+    cep?: string;
+    municipio?: string;
+    uf?: string;
+    fone?: string;
   };
   totais: {
     vProd: number;
@@ -162,7 +203,46 @@ export interface SefazInvoice {
     vOutro: number;
     vIPI: number;
     vST: number;
+    vBCST?: number;
+    vBCICMS?: number;
+    vICMS?: number;
+    vPIS?: number;
+    vCOFINS?: number;
+    vII?: number;
+    vTotTrib?: number;
+    vFCPUFDest?: number;
+    vICMSUFDest?: number;
+    vICMSUFRemet?: number;
     vNF: number;
+  };
+  transporte?: {
+    modFrete?: string; // 0=Remetente, 1=Destinatário, 2=Terceiros, 9=Sem Frete
+    modFreteDesc?: string;
+    transportador?: {
+      cnpj?: string;
+      xNome?: string;
+      ie?: string;
+      xEnder?: string;
+      xMun?: string;
+      uf?: string;
+    };
+    veiculo?: {
+      placa?: string;
+      uf?: string;
+      rntc?: string;
+    };
+    volumes?: {
+      qVol?: number;
+      esp?: string;
+      marca?: string;
+      nVol?: string;
+      pesoL?: number;
+      pesoB?: number;
+    };
+  };
+  dadosAdicionais?: {
+    infCpl?: string;
+    infAdFisco?: string;
   };
   itens: SefazItem[];
   duplicatas: SefazDuplicata[];

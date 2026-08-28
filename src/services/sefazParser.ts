@@ -39,6 +39,12 @@ export class SefazXmlParser {
       const tpNF = ide?.querySelector("tpNF")?.textContent || "1"; // 0 = Entrada, 1 = Saída
       const tipoOperacao: 'ENTRADA' | 'SAIDA' = tpNF === '0' ? 'ENTRADA' : 'SAIDA';
       const dhEmi = ide?.querySelector("dhEmi")?.textContent || ide?.querySelector("dEmi")?.textContent || new Date().toISOString();
+      const natOp = ide?.querySelector("natOp")?.textContent || "VENDA";
+
+      // Protocolo de Autorização
+      const infProt = xmlDoc.querySelector("protNFe > infProt") || xmlDoc.querySelector("infProt");
+      const nProt = infProt?.querySelector("nProt")?.textContent || xmlDoc.querySelector("nProt")?.textContent || "";
+      const dhRecbto = infProt?.querySelector("dhRecbto")?.textContent || xmlDoc.querySelector("dhRecbto")?.textContent || dhEmi;
 
       // Emitente
       const emit = xmlDoc.querySelector("emit");
@@ -46,8 +52,16 @@ export class SefazXmlParser {
       const emitNome = emit?.querySelector("xNome")?.textContent || "EMITENTE SEFAZ";
       const emitFant = emit?.querySelector("xFant")?.textContent || emitNome;
       const emitIE = emit?.querySelector("IE")?.textContent || "";
+      const emitIM = emit?.querySelector("IM")?.textContent || "ISENTO";
+      const emitIEST = emit?.querySelector("IEST")?.textContent || "";
       const emitUF = emit?.querySelector("enderEmit > UF")?.textContent || "SP";
       const emitMun = emit?.querySelector("enderEmit > xMun")?.textContent || "São Paulo";
+      const emitLgr = emit?.querySelector("enderEmit > xLgr")?.textContent || "";
+      const emitNro = emit?.querySelector("enderEmit > nro")?.textContent || "";
+      const emitCpl = emit?.querySelector("enderEmit > xCpl")?.textContent || "";
+      const emitBairro = emit?.querySelector("enderEmit > xBairro")?.textContent || "";
+      const emitCEP = emit?.querySelector("enderEmit > CEP")?.textContent || "";
+      const emitFone = emit?.querySelector("enderEmit > fone")?.textContent || "";
 
       // Destinatário
       const dest = xmlDoc.querySelector("dest");
@@ -56,16 +70,52 @@ export class SefazXmlParser {
       const destIE = dest?.querySelector("IE")?.textContent || "";
       const destUF = dest?.querySelector("enderDest > UF")?.textContent || "SP";
       const destMun = dest?.querySelector("enderDest > xMun")?.textContent || "";
+      const destLgr = dest?.querySelector("enderDest > xLgr")?.textContent || "";
+      const destNro = dest?.querySelector("enderDest > nro")?.textContent || "";
+      const destCpl = dest?.querySelector("enderDest > xCpl")?.textContent || "";
+      const destBairro = dest?.querySelector("enderDest > xBairro")?.textContent || "";
+      const destCEP = dest?.querySelector("enderDest > CEP")?.textContent || "";
+      const destFone = dest?.querySelector("enderDest > fone")?.textContent || "";
+      const destEmail = dest?.querySelector("email")?.textContent || "";
+
+      // Local de Entrega (se houver)
+      const entrega = xmlDoc.querySelector("entrega");
+      let localEntrega: SefazInvoice['localEntrega'] = undefined;
+      if (entrega) {
+        localEntrega = {
+          cnpj: entrega.querySelector("CNPJ")?.textContent || entrega.querySelector("CPF")?.textContent || "",
+          xNome: entrega.querySelector("xNome")?.textContent || "",
+          ie: entrega.querySelector("IE")?.textContent || "",
+          logradouro: entrega.querySelector("xLgr")?.textContent || "",
+          numero: entrega.querySelector("nro")?.textContent || "",
+          complemento: entrega.querySelector("xCpl")?.textContent || "",
+          bairro: entrega.querySelector("xBairro")?.textContent || "",
+          cep: entrega.querySelector("CEP")?.textContent || "",
+          municipio: entrega.querySelector("xMun")?.textContent || "",
+          uf: entrega.querySelector("UF")?.textContent || "",
+          fone: entrega.querySelector("fone")?.textContent || ""
+        };
+      }
 
       // Totais da NF
       const icmsTot = xmlDoc.querySelector("ICMSTot");
+      const vBCICMSTotal = parseFloat(icmsTot?.querySelector("vBC")?.textContent || "0");
+      const vICMSTotal = parseFloat(icmsTot?.querySelector("vICMS")?.textContent || "0");
+      const vBCSTTotal = parseFloat(icmsTot?.querySelector("vBCST")?.textContent || "0");
+      const vSTTotal = parseFloat(icmsTot?.querySelector("vST")?.textContent || "0");
       const vProdTotal = parseFloat(icmsTot?.querySelector("vProd")?.textContent || "0");
       const vFreteTotal = parseFloat(icmsTot?.querySelector("vFrete")?.textContent || "0");
       const vSegTotal = parseFloat(icmsTot?.querySelector("vSeg")?.textContent || "0");
       const vDescTotal = parseFloat(icmsTot?.querySelector("vDesc")?.textContent || "0");
       const vOutroTotal = parseFloat(icmsTot?.querySelector("vOutro")?.textContent || "0");
       const vIPITotal = parseFloat(icmsTot?.querySelector("vIPI")?.textContent || "0");
-      const vSTTotal = parseFloat(icmsTot?.querySelector("vST")?.textContent || "0");
+      const vPISTotal = parseFloat(icmsTot?.querySelector("vPIS")?.textContent || "0");
+      const vCOFINSTotal = parseFloat(icmsTot?.querySelector("vCOFINS")?.textContent || "0");
+      const vIITotal = parseFloat(icmsTot?.querySelector("vII")?.textContent || "0");
+      const vTotTribTotal = parseFloat(xmlDoc.querySelector("vTotTrib")?.textContent || icmsTot?.querySelector("vTotTrib")?.textContent || "0");
+      const vFCPUFDestTotal = parseFloat(icmsTot?.querySelector("vFCPUFDest")?.textContent || "0");
+      const vICMSUFDestTotal = parseFloat(icmsTot?.querySelector("vICMSUFDest")?.textContent || "0");
+      const vICMSUFRemetTotal = parseFloat(icmsTot?.querySelector("vICMSUFRemet")?.textContent || "0");
       const vNFTotal = parseFloat(icmsTot?.querySelector("vNF")?.textContent || `${vProdTotal}`);
 
       // Itens (<det>)
@@ -95,8 +145,14 @@ export class SefazXmlParser {
         // Impostos do item
         const imposto = det.querySelector("imposto");
         const vIPI = parseFloat(imposto?.querySelector("IPI > IPITrib > vIPI")?.textContent || "0");
+        const pIPI = parseFloat(imposto?.querySelector("IPI > IPITrib > pIPI")?.textContent || "0");
         const vICMS = parseFloat(imposto?.querySelector("ICMS vICMS")?.textContent || "0");
+        const vBCICMS = parseFloat(imposto?.querySelector("ICMS vBC")?.textContent || "0");
+        const pICMS = parseFloat(imposto?.querySelector("ICMS pICMS")?.textContent || "0");
+        const cstICMS = imposto?.querySelector("ICMS CST")?.textContent || imposto?.querySelector("ICMS CSOSN")?.textContent || "000";
+        const orig = imposto?.querySelector("ICMS orig")?.textContent || "0";
         const vICMSST = parseFloat(imposto?.querySelector("ICMS vICMSST")?.textContent || "0");
+        const vBCST = parseFloat(imposto?.querySelector("ICMS vBCST")?.textContent || "0");
         const vPIS = parseFloat(imposto?.querySelector("PIS vPIS")?.textContent || "0");
         const vCOFINS = parseFloat(imposto?.querySelector("COFINS vCOFINS")?.textContent || "0");
 
@@ -157,8 +213,14 @@ export class SefazXmlParser {
           vDesc,
           vOutro,
           vIPI,
+          pIPI,
           vICMS,
+          pICMS,
+          vBCICMS,
+          cstICMS,
+          orig,
           vICMSST,
+          vBCST,
           vPIS,
           vCOFINS,
           custoLiquidoUnitario: Number(custoLiquidoUnitario.toFixed(2)),
@@ -233,27 +295,96 @@ export class SefazXmlParser {
       const prazoMedioDias = duplicatas.length > 0 ? 
         Math.round(duplicatas.reduce((acc, d) => acc + (d.diasPrazo || 0), 0) / duplicatas.length) : 0;
 
+      // Transporte
+      const transp = xmlDoc.querySelector("transp");
+      const modFrete = transp?.querySelector("modFrete")?.textContent || "9";
+      const modFreteMap: Record<string, string> = {
+        "0": "0-Por conta do Rem",
+        "1": "1-Por conta do Dest",
+        "2": "2-Por conta de Terceiros",
+        "3": "3-Próprio por conta do Rem",
+        "4": "4-Próprio por conta do Dest",
+        "9": "9-Sem Frete"
+      };
+
+      const transporta = transp?.querySelector("transporta");
+      const veicTransp = transp?.querySelector("veicTransp");
+      const vol = transp?.querySelector("vol");
+
+      const transporte: SefazInvoice['transporte'] = {
+        modFrete,
+        modFreteDesc: modFreteMap[modFrete] || `Frete (${modFrete})`,
+        transportador: transporta ? {
+          cnpj: transporta.querySelector("CNPJ")?.textContent || transporta.querySelector("CPF")?.textContent || "",
+          xNome: transporta.querySelector("xNome")?.textContent || "",
+          ie: transporta.querySelector("IE")?.textContent || "",
+          xEnder: transporta.querySelector("xEnder")?.textContent || "",
+          xMun: transporta.querySelector("xMun")?.textContent || "",
+          uf: transporta.querySelector("UF")?.textContent || ""
+        } : undefined,
+        veiculo: veicTransp ? {
+          placa: veicTransp.querySelector("placa")?.textContent || "",
+          uf: veicTransp.querySelector("UF")?.textContent || "",
+          rntc: veicTransp.querySelector("RNTC")?.textContent || ""
+        } : undefined,
+        volumes: vol ? {
+          qVol: parseFloat(vol.querySelector("qVol")?.textContent || "1"),
+          esp: vol.querySelector("esp")?.textContent || "CAIXA(S)",
+          marca: vol.querySelector("marca")?.textContent || "",
+          nVol: vol.querySelector("nVol")?.textContent || "",
+          pesoL: parseFloat(vol.querySelector("pesoL")?.textContent || "0"),
+          pesoB: parseFloat(vol.querySelector("pesoB")?.textContent || "0")
+        } : undefined
+      };
+
+      // Dados Adicionais
+      const infAdic = xmlDoc.querySelector("infAdic");
+      const infCpl = infAdic?.querySelector("infCpl")?.textContent || "";
+      const infAdFisco = infAdic?.querySelector("infAdFisco")?.textContent || "";
+
       return {
         id: chaveAcesso ? `NFE-${chaveAcesso}` : `NFE-${nNF}-${serie}-${Date.now()}`,
         chaveAcesso,
         numero: nNF,
         serie,
         tipoOperacao,
+        naturezaOperacao: natOp,
+        protocoloAutorizacao: nProt ? {
+          nProt,
+          dhRecbto
+        } : undefined,
         dataEmissao: dhEmi,
         emitente: {
           cnpj: emitCnpj,
           xNome: emitNome,
           xFant: emitFant,
           ie: emitIE,
+          im: emitIM,
+          ieST: emitIEST,
           uf: emitUF,
-          municipio: emitMun
+          municipio: emitMun,
+          logradouro: emitLgr,
+          numero: emitNro,
+          complemento: emitCpl,
+          bairro: emitBairro,
+          cep: emitCEP,
+          fone: emitFone
         },
         destinatario: {
           cnpj: destCnpj,
           xNome: destNome,
           ie: destIE,
-          uf: destUF
+          uf: destUF,
+          municipio: destMun,
+          logradouro: destLgr,
+          numero: destNro,
+          complemento: destCpl,
+          bairro: destBairro,
+          cep: destCEP,
+          fone: destFone,
+          email: destEmail
         },
+        localEntrega,
         totais: {
           vProd: Number(vProdTotal.toFixed(2)),
           vFrete: Number(vFreteTotal.toFixed(2)),
@@ -262,8 +393,23 @@ export class SefazXmlParser {
           vOutro: Number(vOutroTotal.toFixed(2)),
           vIPI: Number(vIPITotal.toFixed(2)),
           vST: Number(vSTTotal.toFixed(2)),
+          vBCST: Number(vBCSTTotal.toFixed(2)),
+          vBCICMS: Number(vBCICMSTotal.toFixed(2)),
+          vICMS: Number(vICMSTotal.toFixed(2)),
+          vPIS: Number(vPISTotal.toFixed(2)),
+          vCOFINS: Number(vCOFINSTotal.toFixed(2)),
+          vII: Number(vIITotal.toFixed(2)),
+          vTotTrib: Number(vTotTribTotal.toFixed(2)),
+          vFCPUFDest: Number(vFCPUFDestTotal.toFixed(2)),
+          vICMSUFDest: Number(vICMSUFDestTotal.toFixed(2)),
+          vICMSUFRemet: Number(vICMSUFRemetTotal.toFixed(2)),
           vNF: Number(vNFTotal.toFixed(2))
         },
+        transporte,
+        dadosAdicionais: (infCpl || infAdFisco) ? {
+          infCpl,
+          infAdFisco
+        } : undefined,
         statusNota: 'AUTORIZADA',
         temCartaCorrecao: false,
         totalCartasCorrecao: 0,
