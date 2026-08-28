@@ -1105,10 +1105,16 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                                 </span>
                               )}
 
+                              {(!inv.itens || inv.itens.length === 0) && !isCancelada && (
+                                <span className="px-1.5 py-0.2 bg-amber-200 text-amber-900 border border-amber-800/40 rounded-xs text-[8px] font-bold uppercase tracking-wider" title="Resumo SEFAZ recebido (resNFe). Itens completos serão liberados após Ciência da Emissão.">
+                                  ⚡ RESUMO SEFAZ
+                                </span>
+                              )}
+
                               {hasCce && !isCancelada && (
                                 <button
                                   onClick={() => setCceModalInvoice(inv)}
-                                  className="px-1.5 py-0.2 bg-amber-200 hover:bg-amber-300 text-amber-900 border border-amber-800/40 rounded-xs text-[8px] font-bold uppercase tracking-wider flex items-center space-x-0.5"
+                                  className="px-1.5 py-0.2 bg-blue-200 hover:bg-blue-300 text-blue-900 border border-blue-800/40 rounded-xs text-[8px] font-bold uppercase tracking-wider flex items-center space-x-0.5"
                                   title="Clique para ver os dados da Carta de Correção Eletrônica"
                                 >
                                   <span>CC-e nº {inv.cartaCorrecao?.nSeqEvento || 1}</span>
