@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { SefazInvoice } from '../../types';
 import { Printer, Download, X } from 'lucide-react';
 
@@ -10,6 +10,17 @@ interface DanfeModalProps {
 
 export const DanfeModal: React.FC<DanfeModalProps> = ({ invoice, onClose, onDownloadXml }) => {
   const printRef = useRef<HTMLDivElement>(null);
+
+  // Close on Escape key press
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const handlePrint = () => {
     window.print();
@@ -92,58 +103,67 @@ export const DanfeModal: React.FC<DanfeModalProps> = ({ invoice, onClose, onDown
   const localEntrega = invoice.localEntrega;
 
   return (
-    <div className="fixed inset-0 bg-black/75 z-50 flex flex-col items-center justify-start overflow-y-auto p-2 sm:p-4 print:p-0 print:bg-white print:static print:z-auto">
+    <div 
+      className="fixed inset-0 bg-black/75 z-50 flex flex-col items-center justify-start overflow-y-auto p-2 sm:p-4 print:p-0 print:bg-white print:static print:z-auto cursor-pointer"
+      onClick={onClose}
+    >
       
-      {/* Top Action Bar (hidden when printing) */}
-      <div className="w-full max-w-5xl bg-[#141414] text-[#E4E3E0] p-3 rounded-t-sm flex items-center justify-between shadow-xl mb-0 print:hidden sticky top-0 z-10 border border-[#333]">
-        <div className="flex items-center space-x-2">
-          <span className="font-bold text-xs uppercase tracking-wider">
-            DANFE - NF-e Nº {invoice.numero} (Série {invoice.serie})
-          </span>
-          {isCancelada && (
-            <span className="px-2 py-0.5 bg-red-600 text-white font-bold text-[10px] uppercase rounded-xs">
-              NF-e Cancelada
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={handlePrint}
-            className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-white text-[#141414] font-bold text-xs uppercase rounded-xs transition flex items-center space-x-1.5 shadow-xs"
-            title="Imprimir DANFE ou Salvar como PDF"
-          >
-            <Printer className="w-4 h-4" />
-            <span>Imprimir DANFE / Salvar PDF</span>
-          </button>
-
-          {onDownloadXml && (
-            <button
-              onClick={() => onDownloadXml(invoice)}
-              className="px-3 py-1.5 bg-[#2a2a2a] hover:bg-[#3a3a3a] text-[#E4E3E0] font-bold text-xs uppercase rounded-xs transition flex items-center space-x-1.5 border border-[#444]"
-              title="Baixar arquivo XML original"
-            >
-              <Download className="w-4 h-4" />
-              <span>Baixar XML</span>
-            </button>
-          )}
-
-          <button
-            onClick={onClose}
-            className="p-1.5 text-[#E4E3E0] hover:text-white rounded-xs hover:bg-[#2a2a2a] transition ml-2"
-            title="Fechar Visualização"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
-
-      {/* DANFE DOCUMENT PAPER CONTAINER */}
+      {/* Inner Document & Action Bar Container (Stop propagation so clicks inside don't close) */}
       <div 
-        ref={printRef}
-        id="danfe-print-area"
-        className="w-full max-w-5xl bg-white text-black font-sans p-4 sm:p-6 shadow-2xl rounded-b-sm print:shadow-none print:p-0 print:m-0 print:max-w-none print:w-full text-[9px] leading-tight border border-gray-400 print:border-none"
+        className="w-full max-w-5xl flex flex-col my-0 sm:my-2 cursor-default"
+        onClick={(e) => e.stopPropagation()}
       >
+
+        {/* Top Action Bar (hidden when printing) */}
+        <div className="w-full bg-[#141414] text-[#E4E3E0] p-3 rounded-t-sm flex items-center justify-between shadow-xl mb-0 print:hidden sticky top-0 z-10 border border-[#333]">
+          <div className="flex items-center space-x-2">
+            <span className="font-bold text-xs uppercase tracking-wider">
+              DANFE - NF-e Nº {invoice.numero} (Série {invoice.serie})
+            </span>
+            {isCancelada && (
+              <span className="px-2 py-0.5 bg-red-600 text-white font-bold text-[10px] uppercase rounded-xs">
+                NF-e Cancelada
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={handlePrint}
+              className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-white text-[#141414] font-bold text-xs uppercase rounded-xs transition flex items-center space-x-1.5 shadow-xs"
+              title="Imprimir DANFE ou Salvar como PDF"
+            >
+              <Printer className="w-4 h-4" />
+              <span>Imprimir DANFE / Salvar PDF</span>
+            </button>
+
+            {onDownloadXml && (
+              <button
+                onClick={() => onDownloadXml(invoice)}
+                className="px-3 py-1.5 bg-[#2a2a2a] hover:bg-[#3a3a3a] text-[#E4E3E0] font-bold text-xs uppercase rounded-xs transition flex items-center space-x-1.5 border border-[#444]"
+                title="Baixar arquivo XML original"
+              >
+                <Download className="w-4 h-4" />
+                <span>Baixar XML</span>
+              </button>
+            )}
+
+            <button
+              onClick={onClose}
+              className="p-1.5 text-[#E4E3E0] hover:text-white rounded-xs hover:bg-[#2a2a2a] transition ml-2"
+              title="Fechar Visualização (Esc)"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* DANFE DOCUMENT PAPER CONTAINER */}
+        <div 
+          ref={printRef}
+          id="danfe-print-area"
+          className="w-full bg-white text-black font-sans p-4 sm:p-6 shadow-2xl rounded-b-sm print:shadow-none print:p-0 print:m-0 print:max-w-none print:w-full text-[9px] leading-tight border border-gray-400 print:border-none"
+        >
         
         {/* ========================================================================= */}
         {/* CANHOTO / COMPROVANTE DE RECEBIMENTO */}
@@ -722,5 +742,7 @@ export const DanfeModal: React.FC<DanfeModalProps> = ({ invoice, onClose, onDown
       </div>
 
     </div>
+
+  </div>
   );
 };
