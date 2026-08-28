@@ -11,6 +11,8 @@ import { SefazCertificateManager } from './components/modules/SefazCertificateMa
 import { MaintenanceModule } from './components/modules/MaintenanceModule';
 import { ApiSettings } from './components/modules/ApiSettings';
 import { XmlUploaderModal } from './components/modules/XmlUploaderModal';
+import { Reports } from './components/modules/Reports';
+import { MOCK_MOV_RES, MOCK_CONSOLIDADO } from './services/mockData';
 
 import { SefazInvoice, PdvProduct, ApiConfig, MkpConfig, SefazCertificate } from './types';
 import { PdvApiService } from './services/apiService';
@@ -211,11 +213,10 @@ export default function App() {
               )}
 
               {activeTab === 'relatorios' && (
-                <MaintenanceModule
-                  moduleName="Relatórios Gerenciais (Mov Res & Consolidado)"
-                  moduleCode="REP-MGR"
-                  description="Módulo reservado para demonstrativos gerenciais unificados e consolidação do banco central."
-                  onNavigateToSefaz={() => setActiveTab('certificado')}
+                <Reports
+                  movRes={MOCK_MOV_RES}
+                  consolidado={MOCK_CONSOLIDADO}
+                  isLoading={isLoading}
                 />
               )}
 

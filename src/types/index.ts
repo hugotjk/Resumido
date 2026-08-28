@@ -493,3 +493,53 @@ export interface PdvSyncData {
   results: Record<string, any>;
   errors: Record<string, string>;
 }
+
+export type MovResOrdenacao = 'VENDA' | 'ESTOQUE';
+export type MovResAgrupamento = 'GESTOR' | 'LOJA';
+export type MovResModoFiltro = 'FORNECEDOR' | 'MODELO';
+export type MovResRefPrincipal = 'REFERENCIA' | 'REFERENCIA_FORNECEDOR';
+
+export interface MovResFilters {
+  ordenacao: MovResOrdenacao;
+  agrupamento: MovResAgrupamento;
+  dataInicio: string;
+  dataFim: string;
+  rede: string;
+  tipoLoja: string;
+  gestor: string;
+  modoFiltro: MovResModoFiltro;
+  fornecedorOuModelo: string;
+  subGrupoComprador: string;
+  colecao: string;
+  referenciaPrincipal: MovResRefPrincipal;
+  grupo: string;
+  buscaTexto?: string;
+}
+
+export interface MovResItem {
+  id: string | number;
+  referencia: string;
+  referenciaFornecedor: string;
+  descricao: string;
+  precoVarejo: number;
+  custo?: number;
+  vendaTotal: number;
+  estoqueTotal: number;
+  rede: string;
+  tipoLoja: string;
+  gestor: string;
+  fornecedor: string;
+  modelo: string;
+  subGrupo: string; // Comprador
+  colecao: string;
+  grupo: string;
+  dadosPorColuna: Record<string, { venda: number; estoque: number }>;
+}
+
+export interface MovResColumnHeader {
+  id: string;
+  nome: string;
+  tipo?: string;
+  rede?: string;
+}
+
