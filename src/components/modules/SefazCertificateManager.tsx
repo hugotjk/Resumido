@@ -89,11 +89,30 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
     cnpj?: string;
   } | null>(null);
 
+  // Multi-page sync and NSU progress tracking state
+  const [syncProgress, setSyncProgress] = useState<{
+    isActive: boolean;
+    mode: 'INCREMENTAL' | 'FULL';
+    currentPage: number;
+    ultNSU: string;
+    maxNSU: string;
+    newInvoicesCount: number;
+    eventsCount: number;
+    cceCount: number;
+    cancelCount: number;
+    statusText: string;
+  } | null>(null);
+
+  const [nsuSyncState, setNsuSyncState] = useState<import('../../types').SefazNsuSyncState | null>(null);
+
   // XML Filter & Search states
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [tipoOperacaoFilter, setTipoOperacaoFilter] = useState<'TODAS' | 'ENTRADA' | 'SAIDA'>('TODAS');
+  const [statusNotaFilter, setStatusNotaFilter] = useState<'TODAS' | 'AUTORIZADA' | 'CANCELADA' | 'CCE'>('TODAS');
   const [selectedInvoiceModal, setSelectedInvoiceModal] = useState<SefazInvoice | null>(null);
   const [rawXmlModal, setRawXmlModal] = useState<{ chave: string; numero: string; xml: string } | null>(null);
+  const [cceModalInvoice, setCceModalInvoice] = useState<SefazInvoice | null>(null);
+  const [fiscalEventsList, setFiscalEventsList] = useState<import('../../types').SefazFiscalEvent[]>([]);
 
   // File Upload input refs
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -116,7 +135,25 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
     if (activeCertificate && selectedStoreCnpj === 'ALL') {
       setSelectedStoreCnpj(activeCertificate.cnpj);
     }
-  }, [activeCertificate]);
+    const targetCnpj = selectedStoreCnpj !== 'ALL' ? selectedStoreCnpj : (activeCertificate?.cnpj || (certificates[0]?.cnpj || ''));
+    if (targetCnpj) {
+      loadSyncStateAndEvents(targetCnpj);
+    }
+  }, [activeCertificate, selectedStoreCnpj, certificates]);
+
+  const loadSyncStateAndEvents = async (cnpj: string) => {
+    try {
+      const state = await SefazSyncService.getSyncState(cnpj);
+      if (state) {
+        setNsuSyncState(state);
+        setSefazUltNSU(state.ultimoNSUSincronizado || '0');
+      }
+      const events = await SefazSyncService.getFiscalEvents(cnpj);
+      setFiscalEventsList(events);
+    } catch {
+      // ignore
+    }
+  };
 
   const checkStatus = async () => {
     try {
@@ -191,61 +228,130 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
     }
   };
 
-  // Synchronize XMLs for a single certificate / store
-  const handleSyncFromSefaz = async (targetCert?: SefazCertificate) => {
+  // 1. Sincronização Incremental (Apenas o que é novo ou sofreu alterações: novas notas, CC-e, cancelamentos)
+  const handleSyncIncremental = async (targetCert?: SefazCertificate) => {
     const certToUse = targetCert || activeCertificate || certificates.find(c => c.cnpj === selectedStoreCnpj) || (certificates.length > 0 ? certificates[0] : null);
     
     if (!certToUse) {
-      setErrorMessage('Adicione um certificado digital A1 antes de consultar a SEFAZ.');
+      setErrorMessage('Adicione ou selecione um certificado digital A1 antes de consultar a SEFAZ.');
       return;
     }
 
     setIsSyncingSefaz(true);
     setErrorMessage(null);
     setSuccessMessage(null);
+    setSyncProgress({
+      isActive: true,
+      mode: 'INCREMENTAL',
+      currentPage: 0,
+      ultNSU: sefazUltNSU,
+      maxNSU: nsuSyncState?.maxNSUSefaz || sefazUltNSU,
+      newInvoicesCount: 0,
+      eventsCount: 0,
+      cceCount: 0,
+      cancelCount: 0,
+      statusText: 'Iniciando sincronização incremental (buscando novos documentos e alterações)...'
+    });
 
     try {
-      const result = await SefazSyncService.syncFromSefazWebService({
-        cnpj: certToUse.cnpj,
+      const result = await SefazSyncService.syncIncremental(certToUse.cnpj, {
         uf: certToUse.uf,
         ambiente: certToUse.ambiente,
-        tipoConsulta: tipoConsultaSefaz,
-        ultNSU: sefazUltNSU,
-        nsu: sefazSpecificNSU,
-        chNFe: sefazChaveConsulta
+        maxPages: 15,
+        onProgress: (p) => {
+          setSyncProgress({
+            isActive: true,
+            mode: 'INCREMENTAL',
+            ...p
+          });
+        }
       });
 
-      setLastSefazResult({
-        cStat: result.cStat,
-        xMotivo: result.xMotivo,
-        ultNSU: result.ultNSU,
-        maxNSU: result.maxNSU,
-        totalDocs: result.newInvoices.length,
-        cnpj: certToUse.cnpj
-      });
+      // Reload fresh database state
+      const freshInvoices = await SefazSyncService.loadRealInvoices();
+      onInvoicesChange(freshInvoices);
 
-      if (result.ultNSU && result.ultNSU !== '0') {
-        setSefazUltNSU(result.ultNSU);
-      }
+      await loadSyncStateAndEvents(certToUse.cnpj);
 
-      if (result.newInvoices.length > 0) {
-        const existingKeys = new Set(invoices.map(inv => inv.chaveAcesso));
-        const added = result.newInvoices.filter(inv => !existingKeys.has(inv.chaveAcesso));
-        const updatedList = [...added, ...invoices];
-        onInvoicesChange(updatedList);
-
-        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. ${result.newInvoices.length} XML(s) baixado(s) e salvos no banco para ${certToUse.razaoSocial}!`);
-      } else {
-        setSuccessMessage(`SEFAZ [cStat ${result.cStat}]: ${result.xMotivo}. (Nenhum novo documento retornado para a loja ${certToUse.razaoSocial})`);
-      }
+      setSuccessMessage(result.mensagem);
     } catch (err: any) {
-      setErrorMessage(`Falha na consulta SEFAZ: ${err.message}`);
+      setErrorMessage(`Falha na sincronização incremental: ${err.message}`);
     } finally {
       setIsSyncingSefaz(false);
+      setTimeout(() => setSyncProgress(null), 3000);
     }
   };
 
-  // Synchronize XMLs for ALL registered certificates in sequence
+  // 2. Puxada Completa (Todos os NSUs desde o início até o final)
+  const handleSyncFullPages = async (targetCert?: SefazCertificate) => {
+    const certToUse = targetCert || activeCertificate || certificates.find(c => c.cnpj === selectedStoreCnpj) || (certificates.length > 0 ? certificates[0] : null);
+    
+    if (!certToUse) {
+      setErrorMessage('Adicione ou selecione um certificado digital A1 antes de consultar a SEFAZ.');
+      return;
+    }
+
+    if (!confirm(`Deseja iniciar a puxada completa de TODOS os NSUs da SEFAZ para a loja "${certToUse.razaoSocial}"? Isso buscará todo o histórico disponível.`)) {
+      return;
+    }
+
+    setIsSyncingSefaz(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setSyncProgress({
+      isActive: true,
+      mode: 'FULL',
+      currentPage: 0,
+      ultNSU: '0',
+      maxNSU: '0',
+      newInvoicesCount: 0,
+      eventsCount: 0,
+      cceCount: 0,
+      cancelCount: 0,
+      statusText: 'Iniciando varredura completa de todos os lotes de documentos da SEFAZ...'
+    });
+
+    try {
+      const result = await SefazSyncService.syncFullAllPages(certToUse.cnpj, {
+        uf: certToUse.uf,
+        ambiente: certToUse.ambiente,
+        maxPages: 50,
+        onProgress: (p) => {
+          setSyncProgress({
+            isActive: true,
+            mode: 'FULL',
+            ...p
+          });
+        }
+      });
+
+      const freshInvoices = await SefazSyncService.loadRealInvoices();
+      onInvoicesChange(freshInvoices);
+
+      await loadSyncStateAndEvents(certToUse.cnpj);
+
+      setSuccessMessage(result.mensagem);
+    } catch (err: any) {
+      setErrorMessage(`Falha na puxada completa: ${err.message}`);
+    } finally {
+      setIsSyncingSefaz(false);
+      setTimeout(() => setSyncProgress(null), 3000);
+    }
+  };
+
+  // Reset NSU pointer
+  const handleResetNSU = async () => {
+    const targetCnpj = selectedStoreCnpj !== 'ALL' ? selectedStoreCnpj : (activeCertificate?.cnpj || '');
+    if (!targetCnpj) return;
+    if (confirm('Deseja resetar o ponteiro de último NSU para 0? A próxima consulta incremental buscará desde o início.')) {
+      await SefazSyncService.resetSyncState(targetCnpj);
+      setSefazUltNSU('0');
+      await loadSyncStateAndEvents(targetCnpj);
+      setSuccessMessage('Ponteiro de NSU resetado com sucesso para 0.');
+    }
+  };
+
+  // Synchronize XMLs for ALL registered certificates in sequence (Incremental)
   const handleSyncAllStores = async () => {
     if (certificates.length === 0) {
       setErrorMessage('Nenhum certificado cadastrado para sincronizar.');
@@ -257,36 +363,33 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
     setSuccessMessage(null);
 
     let totalNewDocs = 0;
-    const allAddedInvoices: SefazInvoice[] = [];
+    let totalCces = 0;
+    let totalCancels = 0;
 
     try {
       for (const cert of certificates) {
         try {
-          const res = await SefazSyncService.syncFromSefazWebService({
-            cnpj: cert.cnpj,
+          const res = await SefazSyncService.syncIncremental(cert.cnpj, {
             uf: cert.uf,
             ambiente: cert.ambiente,
-            tipoConsulta: 'distNSU',
-            ultNSU: '0'
+            maxPages: 10
           });
 
-          if (res.newInvoices && res.newInvoices.length > 0) {
-            totalNewDocs += res.newInvoices.length;
-            allAddedInvoices.push(...res.newInvoices);
-          }
+          totalNewDocs += res.novasNotas.length;
+          totalCces += res.cartasCorrecaoNovas;
+          totalCancels += res.cancelamentosNovos;
         } catch (storeErr: any) {
           console.warn(`[SEFAZ Sync All] Error querying for CNPJ ${cert.cnpj}:`, storeErr);
         }
       }
 
-      if (allAddedInvoices.length > 0) {
-        const existingKeys = new Set(invoices.map(inv => inv.chaveAcesso));
-        const newOnes = allAddedInvoices.filter(inv => !existingKeys.has(inv.chaveAcesso));
-        const merged = [...newOnes, ...invoices];
-        onInvoicesChange(merged);
-        setSuccessMessage(`Sincronização geral concluída! ${totalNewDocs} novo(s) XML(s) obtido(s) de ${certificates.length} loja(s).`);
+      const freshInvoices = await SefazSyncService.loadRealInvoices();
+      onInvoicesChange(freshInvoices);
+
+      if (totalNewDocs > 0 || totalCces > 0 || totalCancels > 0) {
+        setSuccessMessage(`Sincronização de todas as ${certificates.length} lojas concluída! +${totalNewDocs} notas novas, ${totalCces} cartas de correção e ${totalCancels} cancelamentos processados.`);
       } else {
-        setSuccessMessage(`Sincronização geral concluída nas ${certificates.length} lojas. Sem novos documentos pendentes.`);
+        setSuccessMessage(`Sincronização geral concluída nas ${certificates.length} lojas. Banco já estava 100% atualizado com a SEFAZ.`);
       }
     } catch (err: any) {
       setErrorMessage(`Erro na sincronização de todas as lojas: ${err.message}`);
@@ -395,9 +498,16 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
       inv.emitente.cnpj.includes(searchQuery) ||
       inv.itens.some(it => it.xProd.toLowerCase().includes(searchQuery.toLowerCase()) || (it.cEAN && it.cEAN.includes(searchQuery)));
 
-    if (tipoOperacaoFilter === 'ENTRADA') return matchesSearch && inv.tipoOperacao === 'ENTRADA';
-    if (tipoOperacaoFilter === 'SAIDA') return matchesSearch && inv.tipoOperacao === 'SAIDA';
-    return matchesSearch;
+    if (!matchesSearch) return false;
+
+    if (tipoOperacaoFilter === 'ENTRADA' && inv.tipoOperacao !== 'ENTRADA') return false;
+    if (tipoOperacaoFilter === 'SAIDA' && inv.tipoOperacao !== 'SAIDA') return false;
+
+    if (statusNotaFilter === 'AUTORIZADA' && (inv.statusNota === 'CANCELADA' || inv.cancelada)) return false;
+    if (statusNotaFilter === 'CANCELADA' && (inv.statusNota !== 'CANCELADA' && !inv.cancelada)) return false;
+    if (statusNotaFilter === 'CCE' && (inv.statusNota !== 'CCE' && !inv.cartaCorrecao)) return false;
+
+    return true;
   });
 
   return (
@@ -467,10 +577,10 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
       )}
 
       {/* Navigation Sub-Tabs */}
-      <div className="flex border-b border-[#141414] bg-[#F0EFED] p-1 gap-1 text-xs">
+      <div className="flex border-b border-[#141414] bg-[#F0EFED] p-1 gap-1 text-xs overflow-x-auto">
         <button
           onClick={() => setActiveSubTab('xmls')}
-          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs ${
+          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs whitespace-nowrap ${
             activeSubTab === 'xmls'
               ? 'bg-[#141414] text-[#E4E3E0]'
               : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
@@ -481,8 +591,20 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
         </button>
 
         <button
+          onClick={() => setActiveSubTab('eventos' as any)}
+          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs whitespace-nowrap ${
+            (activeSubTab as any) === 'eventos'
+              ? 'bg-[#141414] text-[#E4E3E0]'
+              : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
+          }`}
+        >
+          <Receipt className="w-4 h-4" />
+          <span>Eventos & Mudanças ({fiscalEventsList.length})</span>
+        </button>
+
+        <button
           onClick={() => setActiveSubTab('certificados')}
-          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs ${
+          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs whitespace-nowrap ${
             activeSubTab === 'certificados'
               ? 'bg-[#141414] text-[#E4E3E0]'
               : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
@@ -494,7 +616,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
         <button
           onClick={() => setActiveSubTab('status_sefaz')}
-          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs ${
+          className={`px-4 py-2 font-bold uppercase transition flex items-center space-x-2 rounded-xs whitespace-nowrap ${
             activeSubTab === 'status_sefaz'
               ? 'bg-[#141414] text-[#E4E3E0]'
               : 'bg-transparent text-[#141414] hover:bg-[#E4E3E0]'
@@ -517,27 +639,27 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
               <div className="flex items-center space-x-2">
                 <RefreshCw className={`w-4 h-4 text-[#141414] ${isSyncingSefaz || isSyncingAll ? 'animate-spin' : ''}`} />
                 <h3 className="font-bold text-[#141414] text-xs uppercase">
-                  Puxar XMLs Diretamente da SEFAZ (WebService DFe)
+                  Sincronizador Inteligente SEFAZ (WebService DFe)
                 </h3>
               </div>
 
-              <div className="flex items-center space-x-2 text-[11px]">
-                <span className="text-[#141414]/70">Tipo de Consulta:</span>
-                <select
-                  value={tipoConsultaSefaz}
-                  onChange={(e) => setTipoConsultaSefaz(e.target.value as any)}
-                  className="bg-[#E4E3E0] border border-[#141414] rounded-xs px-2 py-0.5 font-bold text-xs"
-                >
-                  <option value="distNSU">Por Último NSU (Lote)</option>
-                  <option value="consNSU">Por NSU Específico</option>
-                  <option value="consChNFe">Por Chave de Acesso (44 dígitos)</option>
-                </select>
+              {/* Quick Status indicators */}
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="px-2 py-0.5 bg-[#E4E3E0] border border-[#141414] rounded-xs font-mono text-[10px]">
+                  Último NSU Salvo: <strong>{sefazUltNSU}</strong>
+                </span>
+                {nsuSyncState?.maxNSUSefaz && nsuSyncState.maxNSUSefaz !== '0' && (
+                  <span className="px-2 py-0.5 bg-[#E4E3E0] border border-[#141414] rounded-xs font-mono text-[10px]">
+                    Total SEFAZ: <strong>{nsuSyncState.maxNSUSefaz}</strong>
+                  </span>
+                )}
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-2.5 items-end">
-              {/* Store / Certificate Selector */}
-              <div className="space-y-0.5">
+            {/* Sync Controls Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+              {/* Store Selector */}
+              <div className="lg:col-span-4 space-y-0.5">
                 <label className="text-[10px] font-bold uppercase text-[#141414]/70">Loja / Certificado:</label>
                 <select
                   value={selectedStoreCnpj}
@@ -557,69 +679,91 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                 </select>
               </div>
 
-              {tipoConsultaSefaz === 'distNSU' && (
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">Último NSU Consultado:</label>
-                  <input
-                    type="text"
-                    value={sefazUltNSU}
-                    onChange={(e) => setSefazUltNSU(e.target.value)}
-                    placeholder="0"
-                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold font-mono"
-                  />
-                </div>
-              )}
-
-              {tipoConsultaSefaz === 'consNSU' && (
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">NSU a Consultar:</label>
-                  <input
-                    type="text"
-                    value={sefazSpecificNSU}
-                    onChange={(e) => setSefazSpecificNSU(e.target.value)}
-                    placeholder="Ex: 000000000001234"
-                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold font-mono"
-                  />
-                </div>
-              )}
-
-              {tipoConsultaSefaz === 'consChNFe' && (
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-bold uppercase text-[#141414]/70">Chave da NF-e (44 dígitos):</label>
-                  <input
-                    type="text"
-                    value={sefazChaveConsulta}
-                    onChange={(e) => setSefazChaveConsulta(e.target.value)}
-                    placeholder="35240803245678000112550010000078411009876541"
-                    maxLength={44}
-                    className="w-full p-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold font-mono"
-                  />
-                </div>
-              )}
-
-              <div className="flex gap-2">
+              {/* Primary Incremental Sync Button */}
+              <div className="lg:col-span-5 flex gap-2">
                 <button
-                  onClick={() => handleSyncFromSefaz()}
+                  onClick={() => handleSyncIncremental()}
                   disabled={isSyncingSefaz || certificates.length === 0}
-                  className="flex-1 py-1.5 px-3 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1.5 border border-[#141414] disabled:opacity-50"
+                  className="flex-1 py-2 px-3 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1.5 border border-[#141414] disabled:opacity-50 shadow-sm"
+                  title="Consulta apenas novos documentos e alterações fiscais (CC-e, cancelamentos) a partir do último NSU salvo"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSefaz ? 'animate-spin' : ''}`} />
-                  <span>{isSyncingSefaz ? 'Consultando...' : 'Consultar Loja'}</span>
+                  <span>{isSyncingSefaz ? 'Sincronizando...' : 'Sincronizar Novos / Mudanças'}</span>
                 </button>
 
+                <button
+                  onClick={() => handleSyncFullPages()}
+                  disabled={isSyncingSefaz || certificates.length === 0}
+                  className="py-2 px-2.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1 border border-[#141414] disabled:opacity-50"
+                  title="Executa varredura completa de todos os lotes desde o NSU 0 até o total existente"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Puxada Completa</span>
+                </button>
+              </div>
+
+              {/* Secondary Actions */}
+              <div className="lg:col-span-3 flex gap-1.5">
                 {certificates.length > 1 && (
                   <button
                     onClick={handleSyncAllStores}
                     disabled={isSyncingAll}
-                    className="py-1.5 px-3 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1.5 border border-[#141414] disabled:opacity-50"
+                    className="flex-1 py-2 px-2 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-[11px] uppercase tracking-wider rounded-sm transition flex items-center justify-center space-x-1 border border-[#141414] disabled:opacity-50"
                     title="Consultar todas as lojas em lote na SEFAZ"
                   >
-                    <Layers className="w-3.5 h-3.5" />
-                    <span>{isSyncingAll ? 'Sincronizando...' : 'Todas Lojas'}</span>
+                    <Store className="w-3.5 h-3.5" />
+                    <span>Todas Lojas</span>
                   </button>
                 )}
+
+                <button
+                  onClick={handleResetNSU}
+                  disabled={isSyncingSefaz || certificates.length === 0}
+                  className="py-2 px-2 bg-[#E4E3E0] hover:bg-amber-100 text-[#141414] font-bold text-[11px] uppercase rounded-sm border border-[#141414]"
+                  title="Resetar ponteiro de NSU para 0 caso queira recomeçar a busca"
+                >
+                  Reset NSU
+                </button>
               </div>
             </div>
+
+            {/* Sync Progress Live Indicator */}
+            {syncProgress && syncProgress.isActive && (
+              <div className="p-3 bg-[#141414] text-[#E4E3E0] rounded-sm space-y-2 text-xs">
+                <div className="flex items-center justify-between font-bold">
+                  <div className="flex items-center space-x-2">
+                    <RefreshCw className="w-4 h-4 animate-spin text-green-400" />
+                    <span className="uppercase">
+                      {syncProgress.mode === 'INCREMENTAL' ? 'Sincronização Incremental em Andamento' : 'Puxada Geral de Todos os NSUs em Andamento'}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[11px]">Página {syncProgress.currentPage}</span>
+                </div>
+
+                <div className="text-[11px] text-[#E4E3E0]/80 font-sans">
+                  {syncProgress.statusText}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-[#E4E3E0]/20 text-[10px] font-mono">
+                  <div className="bg-[#2a2a2a] p-1.5 rounded-xs">
+                    <span className="block text-[#E4E3E0]/60">NSU Atual:</span>
+                    <span className="font-bold text-xs">{syncProgress.ultNSU}</span>
+                  </div>
+                  <div className="bg-[#2a2a2a] p-1.5 rounded-xs">
+                    <span className="block text-[#E4E3E0]/60">Novas Notas:</span>
+                    <span className="font-bold text-xs text-green-400">+{syncProgress.newInvoicesCount}</span>
+                  </div>
+                  <div className="bg-[#2a2a2a] p-1.5 rounded-xs">
+                    <span className="block text-[#E4E3E0]/60">Cartas de Correção (CC-e):</span>
+                    <span className="font-bold text-xs text-amber-300">{syncProgress.cceCount}</span>
+                  </div>
+                  <div className="bg-[#2a2a2a] p-1.5 rounded-xs">
+                    <span className="block text-[#E4E3E0]/60">Cancelamentos:</span>
+                    <span className="font-bold text-xs text-red-400">{syncProgress.cancelCount}</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {lastSefazResult && (
               <div className="p-2 bg-[#E4E3E0] rounded-sm border border-[#141414] text-[11px] flex flex-wrap items-center justify-between gap-2">
@@ -636,7 +780,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
           </div>
 
           {/* XML Search & Filter Bar */}
-          <div className="bg-[#F0EFED] p-3 rounded-sm border border-[#141414] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+          <div className="bg-[#F0EFED] p-3 rounded-sm border border-[#141414] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
             <div className="relative flex-1">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#141414]/60" />
               <input
@@ -648,17 +792,33 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
               />
             </div>
 
-            <div className="flex items-center space-x-2 text-xs">
-              <span className="text-[10px] uppercase font-bold text-[#141414]/70">Tipo:</span>
-              <select
-                value={tipoOperacaoFilter}
-                onChange={(e) => setTipoOperacaoFilter(e.target.value as any)}
-                className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
-              >
-                <option value="TODAS">Todas ({invoices.length})</option>
-                <option value="ENTRADA">Entradas / Fornecedores ({invoices.filter(i => i.tipoOperacao === 'ENTRADA').length})</option>
-                <option value="SAIDA">Saídas / Vendas ({invoices.filter(i => i.tipoOperacao === 'SAIDA').length})</option>
-              </select>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <div className="flex items-center space-x-1.5">
+                <span className="text-[10px] uppercase font-bold text-[#141414]/70">Operação:</span>
+                <select
+                  value={tipoOperacaoFilter}
+                  onChange={(e) => setTipoOperacaoFilter(e.target.value as any)}
+                  className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
+                >
+                  <option value="TODAS">Todas ({invoices.length})</option>
+                  <option value="ENTRADA">Entradas ({invoices.filter(i => i.tipoOperacao === 'ENTRADA').length})</option>
+                  <option value="SAIDA">Saídas ({invoices.filter(i => i.tipoOperacao === 'SAIDA').length})</option>
+                </select>
+              </div>
+
+              <div className="flex items-center space-x-1.5">
+                <span className="text-[10px] uppercase font-bold text-[#141414]/70">Status Fiscal:</span>
+                <select
+                  value={statusNotaFilter}
+                  onChange={(e) => setStatusNotaFilter(e.target.value as any)}
+                  className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
+                >
+                  <option value="TODAS">Todos ({invoices.length})</option>
+                  <option value="AUTORIZADA">Autorizadas ({invoices.filter(i => i.statusNota !== 'CANCELADA' && !i.cancelada).length})</option>
+                  <option value="CCE">Com CC-e ({invoices.filter(i => i.statusNota === 'CCE' || i.cartaCorrecao).length})</option>
+                  <option value="CANCELADA">Canceladas ({invoices.filter(i => i.statusNota === 'CANCELADA' || i.cancelada).length})</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -668,10 +828,10 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
               <div className="p-10 text-center space-y-3">
                 <FileCode className="w-10 h-10 mx-auto text-[#141414]/40" />
                 <h4 className="text-xs font-bold uppercase text-[#141414]">
-                  Nenhum XML de NF-e registrado no banco
+                  Nenhum XML de NF-e encontrado para os filtros atuais
                 </h4>
                 <p className="text-[11px] text-[#141414]/70 max-w-md mx-auto font-sans">
-                  Execute a sincronização oficial acima para buscar todos os XMLs e notas fiscais diretamente dos servidores da SEFAZ Nacional.
+                  Execute a sincronização incremental ou altere os filtros de busca para visualizar os documentos fiscais.
                 </p>
               </div>
             ) : (
@@ -679,7 +839,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-[#141414] text-[#E4E3E0] text-[10px] uppercase tracking-wider">
-                      <th className="py-2.5 px-3">Operação</th>
+                      <th className="py-2.5 px-3">Status / Operação</th>
                       <th className="py-2.5 px-3">Número / Série</th>
                       <th className="py-2.5 px-3">Data Emissão</th>
                       <th className="py-2.5 px-3">Emitente / CNPJ</th>
@@ -691,134 +851,169 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#141414]/15">
-                    {filteredInvoices.map((inv) => (
-                      <tr key={inv.chaveAcesso} className="hover:bg-[#E4E3E0]/70 transition">
-                        
-                        {/* Tipo Operação */}
-                        <td className="py-2 px-3">
-                          <span className={`px-1.5 py-0.5 rounded-xs text-[9px] font-bold border border-[#141414] ${
-                            inv.tipoOperacao === 'ENTRADA'
-                              ? 'bg-[#141414] text-[#E4E3E0]'
-                              : 'bg-[#E4E3E0] text-[#141414]'
-                          }`}>
-                            {inv.tipoOperacao || 'NF-e'}
-                          </span>
-                        </td>
+                    {filteredInvoices.map((inv) => {
+                      const isCancelada = inv.statusNota === 'CANCELADA' || inv.cancelada;
+                      const hasCce = inv.statusNota === 'CCE' || Boolean(inv.cartaCorrecao);
 
-                        {/* Número / Série */}
-                        <td className="py-2 px-3 font-bold font-mono text-[#141414]">
-                          NF-e {inv.numero} <span className="text-[10px] text-[#141414]/60 font-normal">Série {inv.serie}</span>
-                        </td>
+                      return (
+                        <tr key={inv.chaveAcesso} className={`hover:bg-[#E4E3E0]/70 transition ${isCancelada ? 'bg-red-50/50' : ''}`}>
+                          
+                          {/* Status & Tipo Operação */}
+                          <td className="py-2 px-3">
+                            <div className="flex flex-col gap-1 items-start">
+                              <span className={`px-1.5 py-0.5 rounded-xs text-[9px] font-bold border border-[#141414] ${
+                                inv.tipoOperacao === 'ENTRADA'
+                                  ? 'bg-[#141414] text-[#E4E3E0]'
+                                  : 'bg-[#E4E3E0] text-[#141414]'
+                              }`}>
+                                {inv.tipoOperacao || 'NF-e'}
+                              </span>
 
-                        {/* Data Emissão */}
-                        <td className="py-2 px-3 text-[11px] text-[#141414]/80 whitespace-nowrap">
-                          {new Date(inv.dataEmissao).toLocaleDateString('pt-BR')}
-                        </td>
-
-                        {/* Emitente */}
-                        <td className="py-2 px-3">
-                          <div className="font-bold text-[#141414] truncate max-w-[180px]" title={inv.emitente.xNome}>
-                            {inv.emitente.xNome}
-                          </div>
-                          <div className="text-[10px] text-[#141414]/60 font-mono">
-                            {inv.emitente.cnpj} {inv.emitente.uf ? `(${inv.emitente.uf})` : ''}
-                          </div>
-                        </td>
-
-                        {/* Destinatário */}
-                        <td className="py-2 px-3">
-                          <div className="font-bold text-[#141414] truncate max-w-[160px]" title={inv.destinatario.xNome}>
-                            {inv.destinatario.xNome}
-                          </div>
-                          <div className="text-[10px] text-[#141414]/60 font-mono">
-                            {inv.destinatario.cnpj}
-                          </div>
-                        </td>
-
-                        {/* Valor Total */}
-                        <td className="py-2 px-3 text-right font-bold font-mono text-[#141414]">
-                          R$ {inv.totais.vNF.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </td>
-
-                        {/* Quantidade Itens */}
-                        <td className="py-2 px-3 text-center font-bold text-[#141414]">
-                          {inv.itens.length}
-                        </td>
-
-                        {/* Chave de Acesso com Copiar Rápido */}
-                        <td className="py-2 px-3 text-center">
-                          <button
-                            onClick={() => handleCopyChave(inv.chaveAcesso)}
-                            className="px-2 py-0.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] border border-[#141414] rounded-xs text-[10px] font-mono flex items-center space-x-1 mx-auto"
-                            title="Clique para copiar a chave de acesso de 44 dígitos"
-                          >
-                            <span>{inv.chaveAcesso.slice(0, 6)}...{inv.chaveAcesso.slice(-4)}</span>
-                            {copiedKey === inv.chaveAcesso ? <Check className="w-3 h-3 text-[#141414]" /> : <Copy className="w-3 h-3 text-[#141414]/70" />}
-                          </button>
-                        </td>
-
-                        {/* Ações Rápidas: Copiar XML, Baixar XML, Ver Detalhes */}
-                        <td className="py-2 px-3 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end space-x-1">
-                            
-                            {/* Copiar XML Button */}
-                            <button
-                              onClick={() => handleCopyXml(inv)}
-                              className="p-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] rounded-xs border border-[#141414] transition"
-                              title="Copiar XML puro para a área de transferência"
-                            >
-                              {copiedXmlChave === inv.chaveAcesso ? (
-                                <Check className="w-3.5 h-3.5 text-green-400" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
+                              {isCancelada && (
+                                <span className="px-1.5 py-0.2 bg-red-700 text-white rounded-xs text-[8px] font-bold uppercase tracking-wider" title="Nota cancelada na SEFAZ">
+                                  CANCELADA
+                                </span>
                               )}
-                            </button>
 
-                            {/* Baixar .XML Button */}
+                              {hasCce && !isCancelada && (
+                                <button
+                                  onClick={() => setCceModalInvoice(inv)}
+                                  className="px-1.5 py-0.2 bg-amber-200 hover:bg-amber-300 text-amber-900 border border-amber-800/40 rounded-xs text-[8px] font-bold uppercase tracking-wider flex items-center space-x-0.5"
+                                  title="Clique para ver os dados da Carta de Correção Eletrônica"
+                                >
+                                  <span>CC-e nº {inv.cartaCorrecao?.nSeqEvento || 1}</span>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Número / Série */}
+                          <td className="py-2 px-3 font-bold font-mono text-[#141414]">
+                            <span className={isCancelada ? 'line-through text-red-900' : ''}>NF-e {inv.numero}</span>
+                            <span className="text-[10px] text-[#141414]/60 font-normal block">Série {inv.serie}</span>
+                          </td>
+
+                          {/* Data Emissão */}
+                          <td className="py-2 px-3 text-[11px] text-[#141414]/80 whitespace-nowrap">
+                            {new Date(inv.dataEmissao).toLocaleDateString('pt-BR')}
+                          </td>
+
+                          {/* Emitente */}
+                          <td className="py-2 px-3">
+                            <div className="font-bold text-[#141414] truncate max-w-[180px]" title={inv.emitente.xNome}>
+                              {inv.emitente.xNome}
+                            </div>
+                            <div className="text-[10px] text-[#141414]/60 font-mono">
+                              {inv.emitente.cnpj} {inv.emitente.uf ? `(${inv.emitente.uf})` : ''}
+                            </div>
+                          </td>
+
+                          {/* Destinatário */}
+                          <td className="py-2 px-3">
+                            <div className="font-bold text-[#141414] truncate max-w-[160px]" title={inv.destinatario.xNome}>
+                              {inv.destinatario.xNome}
+                            </div>
+                            <div className="text-[10px] text-[#141414]/60 font-mono">
+                              {inv.destinatario.cnpj}
+                            </div>
+                          </td>
+
+                          {/* Valor Total */}
+                          <td className="py-2 px-3 text-right font-bold font-mono text-[#141414]">
+                            R$ {inv.totais.vNF.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+
+                          {/* Quantidade Itens */}
+                          <td className="py-2 px-3 text-center font-bold text-[#141414]">
+                            {inv.itens.length}
+                          </td>
+
+                          {/* Chave de Acesso com Copiar Rápido */}
+                          <td className="py-2 px-3 text-center">
                             <button
-                              onClick={() => handleDownloadSingleXml(inv)}
-                              className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
-                              title="Baixar arquivo .xml individual"
+                              onClick={() => handleCopyChave(inv.chaveAcesso)}
+                              className="px-2 py-0.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] border border-[#141414] rounded-xs text-[10px] font-mono flex items-center space-x-1 mx-auto"
+                              title="Clique para copiar a chave de acesso de 44 dígitos"
                             >
-                              <Download className="w-3.5 h-3.5" />
+                              <span>{inv.chaveAcesso.slice(0, 6)}...{inv.chaveAcesso.slice(-4)}</span>
+                              {copiedKey === inv.chaveAcesso ? <Check className="w-3 h-3 text-[#141414]" /> : <Copy className="w-3 h-3 text-[#141414]/70" />}
                             </button>
+                          </td>
 
-                            {/* Ver XML Bruto */}
-                            <button
-                              onClick={() => setRawXmlModal({
-                                chave: inv.chaveAcesso,
-                                numero: inv.numero,
-                                xml: inv.xmlOriginal || inv.xmlRaw || SefazXmlParser.generateXml(inv)
-                              })}
-                              className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
-                              title="Visualizar código XML formatado"
-                            >
-                              <FileCode className="w-3.5 h-3.5" />
-                            </button>
+                          {/* Ações Rápidas: Copiar XML, Baixar XML, Ver Detalhes */}
+                          <td className="py-2 px-3 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end space-x-1">
+                              
+                              {/* CC-e Button if present */}
+                              {hasCce && (
+                                <button
+                                  onClick={() => setCceModalInvoice(inv)}
+                                  className="p-1.5 bg-amber-100 hover:bg-amber-200 text-amber-950 rounded-xs border border-amber-800/50 transition"
+                                  title="Visualizar Carta de Correção"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                </button>
+                              )}
 
-                            {/* Ver Detalhes da Nota */}
-                            <button
-                              onClick={() => setSelectedInvoiceModal(inv)}
-                              className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
-                              title="Visualizar dados e produtos da nota fiscal"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
+                              {/* Copiar XML Button */}
+                              <button
+                                onClick={() => handleCopyXml(inv)}
+                                className="p-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] rounded-xs border border-[#141414] transition"
+                                title="Copiar XML puro para a área de transferência"
+                              >
+                                {copiedXmlChave === inv.chaveAcesso ? (
+                                  <Check className="w-3.5 h-3.5 text-green-400" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
 
-                            {/* Excluir Nota */}
-                            <button
-                              onClick={() => handleDeleteInvoice(inv.chaveAcesso)}
-                              className="p-1.5 bg-[#E4E3E0] hover:bg-red-200 text-[#141414] rounded-xs border border-[#141414] transition"
-                              title="Excluir nota do banco"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                              {/* Baixar .XML Button */}
+                              <button
+                                onClick={() => handleDownloadSingleXml(inv)}
+                                className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
+                                title="Baixar arquivo .xml individual"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </button>
 
-                          </div>
-                        </td>
+                              {/* Ver XML Bruto */}
+                              <button
+                                onClick={() => setRawXmlModal({
+                                  chave: inv.chaveAcesso,
+                                  numero: inv.numero,
+                                  xml: inv.xmlOriginal || inv.xmlRaw || SefazXmlParser.generateXml(inv)
+                                })}
+                                className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
+                                title="Visualizar código XML formatado"
+                              >
+                                <FileCode className="w-3.5 h-3.5" />
+                              </button>
 
-                      </tr>
-                    ))}
+                              {/* Ver Detalhes da Nota */}
+                              <button
+                                onClick={() => setSelectedInvoiceModal(inv)}
+                                className="p-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] rounded-xs border border-[#141414] transition"
+                                title="Visualizar dados e produtos da nota fiscal"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+
+                              {/* Excluir Nota */}
+                              <button
+                                onClick={() => handleDeleteInvoice(inv.chaveAcesso)}
+                                className="p-1.5 bg-[#E4E3E0] hover:bg-red-200 text-[#141414] rounded-xs border border-[#141414] transition"
+                                title="Excluir nota do banco"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+
+                            </div>
+                          </td>
+
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -829,7 +1024,142 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
       )}
 
       {/* ========================================================================= */}
-      {/* SUB-TAB 2: MULTI-CERTIFICADOS DIGITAIS A1 */}
+      {/* SUB-TAB 2: EVENTOS FISCAIS & ALTERAÇÕES (CC-E / CANCELAMENTOS) */}
+      {/* ========================================================================= */}
+      {(activeSubTab as any) === 'eventos' && (
+        <div className="space-y-4">
+          <div className="bg-[#F0EFED] p-3.5 rounded-sm border border-[#141414] space-y-3">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-[#141414] pb-2">
+              <div className="flex items-center space-x-2">
+                <Receipt className="w-4 h-4 text-[#141414]" />
+                <h3 className="font-bold text-[#141414] text-xs uppercase">
+                  Histórico de Alterações & Eventos Fiscais SEFAZ (CC-e e Cancelamentos)
+                </h3>
+              </div>
+
+              <div className="flex items-center space-x-2 text-[11px]">
+                <span className="px-2 py-0.5 bg-[#E4E3E0] border border-[#141414] rounded-xs font-mono text-[10px]">
+                  Total de Eventos Registrados: <strong>{fiscalEventsList.length}</strong>
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-[#141414]/70 font-sans">
+              Cada evento processado pela SEFAZ (como Cartas de Correção Eletrônica - CC-e ou Cancelamentos de NF-e) é registrado aqui e aplicado diretamente sobre a nota original no banco de dados.
+            </p>
+          </div>
+
+          {/* Events Table */}
+          <div className="bg-[#F0EFED] rounded-sm border border-[#141414] overflow-hidden">
+            {fiscalEventsList.length === 0 ? (
+              <div className="p-10 text-center space-y-2">
+                <Receipt className="w-10 h-10 mx-auto text-[#141414]/40" />
+                <h4 className="text-xs font-bold uppercase text-[#141414]">
+                  Nenhum evento fiscal registrado ainda
+                </h4>
+                <p className="text-[11px] text-[#141414]/70 max-w-md mx-auto font-sans">
+                  Quando houver cartas de correção ou notas canceladas para os seus CNPJs, elas serão detectadas automaticamente na sincronização incremental e listadas aqui.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-[#141414] text-[#E4E3E0] text-[10px] uppercase tracking-wider">
+                      <th className="py-2.5 px-3">Tipo do Evento</th>
+                      <th className="py-2.5 px-3">Seq</th>
+                      <th className="py-2.5 px-3">Data / Hora Evento</th>
+                      <th className="py-2.5 px-3">Chave da NF-e Vinculada</th>
+                      <th className="py-2.5 px-3">Protocolo</th>
+                      <th className="py-2.5 px-3">Descrição / Conteúdo da Correção</th>
+                      <th className="py-2.5 px-3 text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#141414]/15">
+                    {fiscalEventsList.map((evt) => {
+                      const isCancel = evt.tpEvento === '110111';
+                      const isCce = evt.tpEvento === '110110';
+                      const relatedInv = invoices.find(i => i.chaveAcesso === evt.chNFe);
+
+                      return (
+                        <tr key={evt.id} className="hover:bg-[#E4E3E0]/70 transition">
+                          <td className="py-2.5 px-3">
+                            <span className={`px-2 py-0.5 rounded-xs text-[9px] font-bold border ${
+                              isCancel 
+                                ? 'bg-red-700 text-white border-red-900' 
+                                : isCce 
+                                ? 'bg-amber-300 text-amber-950 border-amber-800' 
+                                : 'bg-[#141414] text-[#E4E3E0] border-[#141414]'
+                            }`}>
+                              {evt.descEvento || (isCancel ? 'CANCELAMENTO' : isCce ? 'CARTA DE CORREÇÃO' : evt.tpEvento)}
+                            </span>
+                          </td>
+
+                          <td className="py-2.5 px-3 font-mono font-bold">
+                            #{evt.nSeqEvento || 1}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-[11px] text-[#141414]/80 whitespace-nowrap font-mono">
+                            {evt.dhEvento ? new Date(evt.dhEvento).toLocaleString('pt-BR') : '-'}
+                          </td>
+
+                          <td className="py-2.5 px-3 font-mono text-[11px]">
+                            <div className="flex items-center space-x-1">
+                              <span>{evt.chNFe.slice(0, 10)}...{evt.chNFe.slice(-6)}</span>
+                              <button
+                                onClick={() => handleCopyChave(evt.chNFe)}
+                                className="p-0.5 hover:bg-[#141414]/10 rounded-xs"
+                                title="Copiar chave"
+                              >
+                                {copiedKey === evt.chNFe ? <Check className="w-3 h-3 text-green-700" /> : <Copy className="w-3 h-3 text-[#141414]/70" />}
+                              </button>
+                            </div>
+                            {relatedInv && (
+                              <span className="text-[10px] text-[#141414]/60 font-sans block">
+                                NF-e {relatedInv.numero} ({relatedInv.emitente.xNome})
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="py-2.5 px-3 font-mono text-[11px] text-[#141414]/80">
+                            {evt.nProt || '-'}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-[11px] max-w-xs truncate" title={evt.xCorrecao || evt.xJust || evt.descEvento}>
+                            {evt.xCorrecao ? (
+                              <span className="font-sans font-medium text-amber-950 bg-amber-50 px-1 py-0.5 rounded-xs border border-amber-200">
+                                {evt.xCorrecao}
+                              </span>
+                            ) : evt.xJust ? (
+                              <span className="font-sans text-red-900">{evt.xJust}</span>
+                            ) : (
+                              <span className="text-[#141414]/60">{evt.descEvento}</span>
+                            )}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-right">
+                            {relatedInv && (
+                              <button
+                                onClick={() => setSelectedInvoiceModal(relatedInv)}
+                                className="px-2 py-1 bg-[#141414] text-[#E4E3E0] rounded-xs text-[10px] font-bold uppercase hover:bg-[#2a2a2a] transition"
+                              >
+                                Ver Nota
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* SUB-TAB 3: MULTI-CERTIFICADOS DIGITAIS A1 */}
       {/* ========================================================================= */}
       {activeSubTab === 'certificados' && (
         <div className="space-y-4">
@@ -897,14 +1227,14 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                               onClick={() => {
                                 onCertificateChange(cert);
                                 setSelectedStoreCnpj(cert.cnpj);
-                                handleSyncFromSefaz(cert);
+                                handleSyncIncremental();
                               }}
                               disabled={isSyncingSefaz}
                               className="px-2.5 py-1 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] text-[10px] font-bold uppercase rounded-xs transition flex items-center space-x-1"
                               title="Consultar SEFAZ para este CNPJ"
                             >
                               <RefreshCw className="w-3 h-3" />
-                              <span>Consultar SEFAZ</span>
+                              <span>Sincronizar</span>
                             </button>
 
                             <button
@@ -1258,6 +1588,93 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                   <span>Baixar .XML</span>
                 </button>
               </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: CARTA DE CORREÇÃO (CC-E) DETAILS */}
+      {/* ========================================================================= */}
+      {cceModalInvoice && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-5">
+          <div className="bg-[#F0EFED] border border-[#141414] rounded-sm max-w-2xl w-full flex flex-col shadow-2xl font-mono">
+            
+            {/* Header */}
+            <div className="p-3.5 bg-[#141414] text-[#E4E3E0] flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <FileText className="w-4 h-4 text-amber-300" />
+                <span className="font-bold text-xs uppercase">
+                  Carta de Correção Eletrônica (CC-e) - NF-e {cceModalInvoice.numero}
+                </span>
+              </div>
+              <button
+                onClick={() => setCceModalInvoice(null)}
+                className="text-[#E4E3E0] hover:text-white text-sm font-bold px-1.5"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-4 space-y-3.5 text-xs">
+              <div className="p-3 bg-amber-50 border border-amber-800/40 rounded-sm space-y-1">
+                <div className="text-[10px] text-amber-900 font-bold uppercase">
+                  Texto da Correção Registrado na SEFAZ:
+                </div>
+                <p className="text-xs font-sans text-[#141414] font-medium whitespace-pre-wrap leading-relaxed">
+                  {cceModalInvoice.cartaCorrecao?.xCorrecao || 'Correção fiscal registrada na SEFAZ para esta nota fiscal.'}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm space-y-0.5">
+                  <span className="text-[10px] text-[#141414]/70 font-bold uppercase block">Sequencial do Evento:</span>
+                  <span className="font-bold font-mono">#{cceModalInvoice.cartaCorrecao?.nSeqEvento || 1}</span>
+                </div>
+                <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm space-y-0.5">
+                  <span className="text-[10px] text-[#141414]/70 font-bold uppercase block">Data / Hora do Registro:</span>
+                  <span className="font-bold font-mono">
+                    {cceModalInvoice.cartaCorrecao?.dhEvento ? new Date(cceModalInvoice.cartaCorrecao.dhEvento).toLocaleString('pt-BR') : '-'}
+                  </span>
+                </div>
+              </div>
+
+              {cceModalInvoice.cartaCorrecao?.nProt && (
+                <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-[11px] space-y-0.5">
+                  <span className="text-[10px] text-[#141414]/70 font-bold uppercase block">Protocolo de Homologação SEFAZ:</span>
+                  <span className="font-mono font-bold">{cceModalInvoice.cartaCorrecao.nProt}</span>
+                </div>
+              )}
+
+              <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-[11px] space-y-0.5">
+                <span className="text-[10px] text-[#141414]/70 font-bold uppercase block">Chave da Nota Vinculada:</span>
+                <span className="font-mono text-xs">{cceModalInvoice.chaveAcesso}</span>
+              </div>
+
+              <div className="text-[10px] text-[#141414]/70 italic">
+                * Conforme legislação da SEFAZ, a Carta de Correção não permite alterar valores tributários, datas de emissão ou dados cadastrais que alterem o remetente/destinatário.
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-3 bg-[#E4E3E0] border-t border-[#141414] flex justify-end space-x-2">
+              <button
+                onClick={() => {
+                  setSelectedInvoiceModal(cceModalInvoice);
+                  setCceModalInvoice(null);
+                }}
+                className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm border border-[#141414]"
+              >
+                Ver Nota Fiscal
+              </button>
+              <button
+                onClick={() => setCceModalInvoice(null)}
+                className="px-3 py-1.5 bg-[#141414] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm"
+              >
+                Fechar
+              </button>
             </div>
 
           </div>

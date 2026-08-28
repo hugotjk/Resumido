@@ -246,6 +246,79 @@ export class FirestoreDbService {
   }
 
   // ==========================================
+  // FISCAL EVENTS (Cartas de Correção, Cancelamentos, etc.)
+  // ==========================================
+
+  public static async saveFiscalEvents(events: import('../types').SefazFiscalEvent[]): Promise<void> {
+    if (!events || events.length === 0) return;
+    try {
+      const batch = writeBatch(db);
+      for (const evt of events) {
+        const docId = evt.id || `EVT_${evt.chaveAcesso}_${evt.tpEventoCodigo}_${evt.nSeqEvento}`;
+        const docRef = doc(db, 'fiscal_events', docId);
+        batch.set(docRef, {
+          ...evt,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
+      await batch.commit();
+    } catch (err) {
+      console.warn('[Firestore] Failed to save fiscal events:', err);
+    }
+  }
+
+  public static async getFiscalEvents(cnpjOrKey?: string): Promise<import('../types').SefazFiscalEvent[]> {
+    try {
+      const coll = collection(db, 'fiscal_events');
+      let q = query(coll, limit(200));
+      const snap = await getDocs(q);
+      const list: import('../types').SefazFiscalEvent[] = [];
+      snap.forEach(d => {
+        const item = d.data() as import('../types').SefazFiscalEvent;
+        if (!cnpjOrKey || item.chaveAcesso === cnpjOrKey || item.cnpjInteressado?.includes(cnpjOrKey)) {
+          list.push(item);
+        }
+      });
+      return list.sort((a, b) => new Date(b.dataHoraEvento || '').getTime() - new Date(a.dataHoraEvento || '').getTime());
+    } catch (err) {
+      console.warn('[Firestore] Failed to load fiscal events:', err);
+      return [];
+    }
+  }
+
+  // ==========================================
+  // NSU SYNC STATE TRACKING (SEFAZ)
+  // ==========================================
+
+  public static async saveSyncState(state: import('../types').SefazNsuSyncState): Promise<void> {
+    try {
+      const cleanCnpj = state.cnpj.replace(/\D/g, '') || 'default_sync';
+      const docRef = doc(db, 'sefaz_sync_state', cleanCnpj);
+      await setDoc(docRef, {
+        ...state,
+        cnpj: cleanCnpj,
+        ultimaConsultaEm: new Date().toISOString()
+      }, { merge: true });
+    } catch (err) {
+      console.warn('[Firestore] Failed to save NSU sync state:', err);
+    }
+  }
+
+  public static async getSyncState(cnpj: string): Promise<import('../types').SefazNsuSyncState | null> {
+    try {
+      const cleanCnpj = cnpj.replace(/\D/g, '') || 'default_sync';
+      const docRef = doc(db, 'sefaz_sync_state', cleanCnpj);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        return snap.data() as import('../types').SefazNsuSyncState;
+      }
+    } catch (err) {
+      console.warn('[Firestore] Failed to get NSU sync state:', err);
+    }
+    return null;
+  }
+
+  // ==========================================
   // CONFIGURATIONS (MKP & API)
   // ==========================================
 
