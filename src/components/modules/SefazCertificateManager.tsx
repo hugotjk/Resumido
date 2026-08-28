@@ -418,7 +418,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
       return;
     }
 
-    const certToUse = activeCertificate || certificates.find(c => c.cnpj === selectedStoreCnpj) || (certificates.length > 0 ? certificates[0] : null);
+    const certToUse = (selectedStoreCnpj !== 'ALL' && certificates.find(c => c.cnpj === selectedStoreCnpj)) || activeCertificate || (certificates.length > 0 ? certificates[0] : null);
     if (!certToUse) {
       setErrorMessage('Adicione ou selecione um certificado digital A1 para assinar a consulta.');
       return;
@@ -904,46 +904,95 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
           </div>
 
           {/* XML Search & Filter Bar */}
-          <div className="bg-[#F0EFED] p-3 rounded-sm border border-[#141414] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
-            <div className="relative flex-1">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#141414]/60" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar por Chave de Acesso, CNPJ, Razão Social, Número da Nota ou Produto..."
-                className="w-full pl-8 pr-3 py-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold focus:outline-none"
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <div className="flex items-center space-x-1.5">
-                <span className="text-[10px] uppercase font-bold text-[#141414]/70">Operação:</span>
-                <select
-                  value={tipoOperacaoFilter}
-                  onChange={(e) => setTipoOperacaoFilter(e.target.value as any)}
-                  className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
-                >
-                  <option value="TODAS">Todas ({invoices.length})</option>
-                  <option value="ENTRADA">Entradas ({invoices.filter(i => i.tipoOperacao === 'ENTRADA').length})</option>
-                  <option value="SAIDA">Saídas ({invoices.filter(i => i.tipoOperacao === 'SAIDA').length})</option>
-                </select>
+          <div className="space-y-2">
+            <div className="bg-[#F0EFED] p-3 rounded-sm border border-[#141414] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#141414]/60" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const clean = searchQuery.replace(/\D/g, '');
+                      if (clean.length === 44) {
+                        handleConsultarChave(clean);
+                      }
+                    }
+                  }}
+                  placeholder="Buscar por Chave de Acesso (44 dígitos), CNPJ, Razão Social, Número da Nota..."
+                  className="w-full pl-8 pr-3 py-1.5 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs font-bold focus:outline-none"
+                />
               </div>
 
-              <div className="flex items-center space-x-1.5">
-                <span className="text-[10px] uppercase font-bold text-[#141414]/70">Status Fiscal:</span>
-                <select
-                  value={statusNotaFilter}
-                  onChange={(e) => setStatusNotaFilter(e.target.value as any)}
-                  className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
-                >
-                  <option value="TODAS">Todos ({invoices.length})</option>
-                  <option value="AUTORIZADA">Autorizadas ({invoices.filter(i => i.statusNota !== 'CANCELADA' && !i.cancelada).length})</option>
-                  <option value="CCE">Com CC-e ({invoices.filter(i => i.statusNota === 'CCE' || i.cartaCorrecao).length})</option>
-                  <option value="CANCELADA">Canceladas ({invoices.filter(i => i.statusNota === 'CANCELADA' || i.cancelada).length})</option>
-                </select>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[10px] uppercase font-bold text-[#141414]/70">Operação:</span>
+                  <select
+                    value={tipoOperacaoFilter}
+                    onChange={(e) => setTipoOperacaoFilter(e.target.value as any)}
+                    className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
+                  >
+                    <option value="TODAS">Todas ({invoices.length})</option>
+                    <option value="ENTRADA">Entradas ({invoices.filter(i => i.tipoOperacao === 'ENTRADA').length})</option>
+                    <option value="SAIDA">Saídas ({invoices.filter(i => i.tipoOperacao === 'SAIDA').length})</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[10px] uppercase font-bold text-[#141414]/70">Status Fiscal:</span>
+                  <select
+                    value={statusNotaFilter}
+                    onChange={(e) => setStatusNotaFilter(e.target.value as any)}
+                    className="bg-[#E4E3E0] border border-[#141414] rounded-sm px-2 py-1 font-bold text-xs"
+                  >
+                    <option value="TODAS">Todos ({invoices.length})</option>
+                    <option value="AUTORIZADA">Autorizadas ({invoices.filter(i => i.statusNota !== 'CANCELADA' && !i.cancelada).length})</option>
+                    <option value="CCE">Com CC-e ({invoices.filter(i => i.statusNota === 'CCE' || i.cartaCorrecao).length})</option>
+                    <option value="CANCELADA">Canceladas ({invoices.filter(i => i.statusNota === 'CANCELADA' || i.cancelada).length})</option>
+                  </select>
+                </div>
               </div>
             </div>
+
+            {/* Direct Consultation Banner for 44-digit Key */}
+            {searchQuery.replace(/\D/g, '').length === 44 && (
+              <div className="p-3 bg-[#141414] text-[#E4E3E0] rounded-sm border border-[#141414] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+                <div className="space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <span className="bg-emerald-500 text-black px-1.5 py-0.5 rounded-xs text-[10px] font-bold">
+                      CHAVE DE 44 DÍGITOS DETECTADA
+                    </span>
+                    <span className="font-mono text-xs font-bold text-emerald-300 break-all">
+                      {searchQuery.replace(/\D/g, '')}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[#E4E3E0]/80 font-sans">
+                    {invoices.some(i => i.chaveAcesso === searchQuery.replace(/\D/g, ''))
+                      ? "Esta nota fiscal já está salva no banco de dados local."
+                      : "Esta nota ainda não está no banco local. Clique para consultar e baixar o XML oficial da SEFAZ:"}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => handleConsultarChave(searchQuery.replace(/\D/g, ''))}
+                  disabled={isConsultingChave}
+                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase rounded-sm flex items-center justify-center space-x-2 shrink-0 shadow-sm disabled:opacity-50"
+                >
+                  {isConsultingChave ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-black" />
+                      <span>Consultando SEFAZ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-3.5 h-3.5 text-black" />
+                      <span>Consultar & Baixar da SEFAZ</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Invoices & XMLs Table */}
@@ -955,38 +1004,64 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                 </div>
                 <div className="space-y-1">
                   <h4 className="text-xs sm:text-sm font-bold uppercase text-[#141414]">
-                    Nenhum XML de NF-e/NFC-e carregado no banco
+                    {searchQuery.replace(/\D/g, '').length === 44
+                      ? 'Nota Fiscal não encontrada no banco local'
+                      : 'Nenhum XML de NF-e/NFC-e carregado no banco'}
                   </h4>
                   <p className="text-[11px] text-[#141414]/70 font-sans leading-relaxed">
-                    Você pode consultar notas de compras na SEFAZ Nacional ou importar o faturamento diário (vendas emitidas pelo caixa/PDV).
+                    {searchQuery.replace(/\D/g, '').length === 44
+                      ? `A chave ${searchQuery.replace(/\D/g, '')} não está salva no seu banco de dados local. Você pode buscá-la diretamente nos servidores da SEFAZ.`
+                      : 'Você pode consultar notas de compras na SEFAZ Nacional ou importar o faturamento diário (vendas emitidas pelo caixa/PDV).'}
                   </p>
                 </div>
 
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-                  <button
-                    onClick={() => setIsUploadModalOpen(true)}
-                    className="px-3.5 py-2 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414] shadow-xs"
-                  >
-                    <UploadCloud className="w-4 h-4" />
-                    <span>Importar XMLs / ZIP do PDV (Vendas)</span>
-                  </button>
+                  {searchQuery.replace(/\D/g, '').length === 44 ? (
+                    <button
+                      onClick={() => handleConsultarChave(searchQuery.replace(/\D/g, ''))}
+                      disabled={isConsultingChave}
+                      className="px-4 py-2 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414] shadow-xs"
+                    >
+                      {isConsultingChave ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Consultando SEFAZ...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Search className="w-3.5 h-3.5" />
+                          <span>Consultar Chave na SEFAZ Agora</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setIsUploadModalOpen(true)}
+                        className="px-3.5 py-2 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414] shadow-xs"
+                      >
+                        <UploadCloud className="w-4 h-4" />
+                        <span>Importar XMLs / ZIP do PDV (Vendas)</span>
+                      </button>
 
-                  <button
-                    onClick={() => handleSyncIncremental()}
-                    disabled={isSyncingSefaz || certificates.length === 0}
-                    className="px-3.5 py-2 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414]"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSefaz ? 'animate-spin' : ''}`} />
-                    <span>Sincronizar Compras na SEFAZ</span>
-                  </button>
+                      <button
+                        onClick={() => handleSyncIncremental()}
+                        disabled={isSyncingSefaz || certificates.length === 0}
+                        className="px-3.5 py-2 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414]"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSefaz ? 'animate-spin' : ''}`} />
+                        <span>Sincronizar Compras na SEFAZ</span>
+                      </button>
 
-                  <button
-                    onClick={() => setIsChaveModalOpen(true)}
-                    className="px-3.5 py-2 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414]"
-                  >
-                    <Search className="w-3.5 h-3.5" />
-                    <span>Consultar por Chave</span>
-                  </button>
+                      <button
+                        onClick={() => setIsChaveModalOpen(true)}
+                        className="px-3.5 py-2 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414]"
+                      >
+                        <Search className="w-3.5 h-3.5" />
+                        <span>Consultar por Chave</span>
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             ) : (
