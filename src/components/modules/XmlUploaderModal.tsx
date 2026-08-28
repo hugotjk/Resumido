@@ -13,6 +13,7 @@ import {
 import { SefazInvoice, PdvProduct, MkpConfig } from '../../types';
 import { SefazSyncService } from '../../services/sefazSyncService';
 import { SefazXmlParser } from '../../services/sefazParser';
+import { FirestoreDbService } from '../../services/firestoreDbService';
 
 interface XmlUploaderModalProps {
   isOpen: boolean;
@@ -89,7 +90,7 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
     }
   };
 
-  const handlePasteProcess = () => {
+  const handlePasteProcess = async () => {
     if (!pastedXml.trim()) return;
     try {
       setErrorMsg(null);
@@ -104,9 +105,15 @@ export const XmlUploaderModal: React.FC<XmlUploaderModalProps> = ({
       const merged = Array.from(existingMap.values());
       onInvoicesChange(merged);
 
+      try {
+        await FirestoreDbService.saveInvoices([parsed]);
+      } catch (saveErr) {
+        console.warn('Erro ao salvar no Firestore:', saveErr);
+      }
+
       setPastedXml('');
       setPasteMode(false);
-      setSuccessMsg(`NF-e nº ${parsed.numero} importada com sucesso!`);
+      setSuccessMsg(`NF-e nº ${parsed.numero} (${parsed.emitente.xNome}) importada e salva no banco de dados!`);
     } catch (err: any) {
       setErrorMsg(`Erro no XML colado: ${err.message}`);
     }
