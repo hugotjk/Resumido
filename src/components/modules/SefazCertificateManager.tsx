@@ -29,11 +29,16 @@ import {
   AlertCircle,
   HelpCircle,
   PlusCircle,
-  Store
+  Store,
+  ChevronDown,
+  ChevronUp,
+  Info
 } from 'lucide-react';
 import { SefazCertificate, SefazInvoice } from '../../types';
 import { SefazSyncService } from '../../services/sefazSyncService';
 import { SefazXmlParser } from '../../services/sefazParser';
+import { FirestoreDbService } from '../../services/firestoreDbService';
+import { XmlUploaderModal } from './XmlUploaderModal';
 
 interface SefazCertificateManagerProps {
   certificates: SefazCertificate[];
@@ -73,6 +78,13 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copiedXmlChave, setCopiedXmlChave] = useState<string | null>(null);
+
+  // PDV / Sales & Chave Lookup Modals
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
+  const [isChaveModalOpen, setIsChaveModalOpen] = useState<boolean>(false);
+  const [chaveInput, setChaveInput] = useState<string>('');
+  const [isConsultingChave, setIsConsultingChave] = useState<boolean>(false);
+  const [showFaturamentoInfo, setShowFaturamentoInfo] = useState<boolean>(true);
 
   // SEFAZ WebService Query states
   const [selectedStoreCnpj, setSelectedStoreCnpj] = useState<string>(activeCertificate?.cnpj || 'ALL');
@@ -395,6 +407,56 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
       setErrorMessage(`Erro na sincronização de todas as lojas: ${err.message}`);
     } finally {
       setIsSyncingAll(false);
+    }
+  };
+
+  // Consultar nota específica por chave de acesso (44 dígitos) diretamente na SEFAZ
+  const handleConsultarChave = async (chaveToQuery: string) => {
+    const cleanKey = chaveToQuery.replace(/\D/g, '');
+    if (cleanKey.length !== 44) {
+      setErrorMessage('A chave de acesso da NF-e deve possuir exatamente 44 dígitos numéricos.');
+      return;
+    }
+
+    const certToUse = activeCertificate || certificates.find(c => c.cnpj === selectedStoreCnpj) || (certificates.length > 0 ? certificates[0] : null);
+    if (!certToUse) {
+      setErrorMessage('Adicione ou selecione um certificado digital A1 para assinar a consulta.');
+      return;
+    }
+
+    setIsConsultingChave(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const res = await SefazSyncService.syncFromSefazWebService({
+        cnpj: certToUse.cnpj,
+        uf: certToUse.uf,
+        ambiente: certToUse.ambiente,
+        tipoConsulta: 'consChNFe',
+        chNFe: cleanKey
+      });
+
+      if (res.newInvoices.length > 0) {
+        const existingMap = new Map<string, SefazInvoice>();
+        invoices.forEach(i => existingMap.set(i.chaveAcesso, i));
+        res.newInvoices.forEach(i => existingMap.set(i.chaveAcesso, i));
+        const merged = Array.from(existingMap.values());
+        onInvoicesChange(merged);
+        await FirestoreDbService.saveInvoices(res.newInvoices);
+        setSuccessMessage(`NF-e nº ${res.newInvoices[0].numero} (${res.newInvoices[0].emitente.xNome}) baixada com sucesso da SEFAZ!`);
+        setChaveInput('');
+        setIsChaveModalOpen(false);
+      } else if (res.fiscalEvents.length > 0) {
+        setSuccessMessage(`Evento fiscal localizado para a chave: ${res.fiscalEvents[0].descricaoEvento}`);
+        setIsChaveModalOpen(false);
+      } else {
+        setErrorMessage(`Retorno SEFAZ (cStat ${res.cStat}): ${res.xMotivo}`);
+      }
+    } catch (err: any) {
+      setErrorMessage(`Erro ao consultar chave na SEFAZ: ${err.message}`);
+    } finally {
+      setIsConsultingChave(false);
     }
   };
 
@@ -727,6 +789,68 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
               </div>
             </div>
 
+            {/* Direct PDV Import & Chave Query Action Bar */}
+            <div className="pt-2 border-t border-[#141414]/15 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => setIsUploadModalOpen(true)}
+                  className="px-3 py-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-[11px] uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414] shadow-xs"
+                  title="Importar arquivos .xml ou pacote .zip das notas de faturamento/venda emitidas pelo PDV/ERP"
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  <span>Importar XMLs / ZIP do PDV (Vendas)</span>
+                </button>
+
+                <button
+                  onClick={() => setIsChaveModalOpen(true)}
+                  className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-[11px] uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414]"
+                  title="Consultar qualquer NF-e específica autorizada na SEFAZ através da Chave de 44 dígitos"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Consultar por Chave (44 Dígitos)</span>
+                </button>
+              </div>
+
+              <button
+                onClick={() => setShowFaturamentoInfo(!showFaturamentoInfo)}
+                className="text-[11px] font-bold text-[#141414]/80 hover:text-[#141414] flex items-center space-x-1 hover:underline"
+              >
+                <Info className="w-3.5 h-3.5 text-[#141414]" />
+                <span>Por que faturamentos de vendas não vêm no DFe da SEFAZ?</span>
+                {showFaturamentoInfo ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+
+            {/* Informational Box about DFe (Compras) vs PDV (Faturamento/Vendas) */}
+            {showFaturamentoInfo && (
+              <div className="p-3 bg-[#E4E3E0] border border-[#141414] rounded-sm text-xs space-y-2">
+                <div className="flex items-center space-x-1.5 font-bold uppercase text-[#141414] text-[11px]">
+                  <HelpCircle className="w-4 h-4 text-[#141414]" />
+                  <span>Entenda o funcionamento legal da SEFAZ: Compras (Entradas) vs Faturamento (Vendas)</span>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-sans">
+                  <div className="p-2.5 bg-[#F0EFED] border border-[#141414]/20 rounded-xs space-y-1">
+                    <span className="font-bold text-[#141414] font-mono uppercase text-[10px] block">
+                      🚚 1. Compras de Fornecedores (Entradas):
+                    </span>
+                    <p className="text-[#141414]/80 leading-relaxed">
+                      Consultadas <strong>100% no automático</strong> pelo WebService DFe Nacional da SEFAZ. O Ambiente Nacional distribui todas as notas fiscais emitidas por terceiros onde a sua loja é a <strong>destinatária/compradora</strong>.
+                    </p>
+                  </div>
+
+                  <div className="p-2.5 bg-[#F0EFED] border border-[#141414]/20 rounded-xs space-y-1">
+                    <span className="font-bold text-[#141414] font-mono uppercase text-[10px] block">
+                      🛍️ 2. Faturamento Diário / Vendas da Loja (Saídas):
+                    </span>
+                    <p className="text-[#141414]/80 leading-relaxed">
+                      Notas de NFC-e (modelo 65) e NF-e (modelo 55) emitidas pela sua própria loja ficam gravadas no seu <strong>software de PDV / ERP</strong>. A SEFAZ não distribui notas no DFe para quem é o próprio emitente. Carregue-as clicando em <strong>"Importar XMLs / ZIP do PDV"</strong> ou via <strong>"Consultar por Chave"</strong>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Sync Progress Live Indicator */}
             {syncProgress && syncProgress.isActive && (
               <div className="p-3 bg-[#141414] text-[#E4E3E0] rounded-sm space-y-2 text-xs">
@@ -825,14 +949,45 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
           {/* Invoices & XMLs Table */}
           <div className="bg-[#F0EFED] rounded-sm border border-[#141414] overflow-hidden">
             {filteredInvoices.length === 0 ? (
-              <div className="p-10 text-center space-y-3">
-                <FileCode className="w-10 h-10 mx-auto text-[#141414]/40" />
-                <h4 className="text-xs font-bold uppercase text-[#141414]">
-                  Nenhum XML de NF-e encontrado para os filtros atuais
-                </h4>
-                <p className="text-[11px] text-[#141414]/70 max-w-md mx-auto font-sans">
-                  Execute a sincronização incremental ou altere os filtros de busca para visualizar os documentos fiscais.
-                </p>
+              <div className="p-8 sm:p-12 text-center space-y-4 max-w-xl mx-auto font-mono">
+                <div className="w-12 h-12 mx-auto rounded-sm bg-[#141414] flex items-center justify-center text-[#E4E3E0]">
+                  <FileCode className="w-6 h-6" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-xs sm:text-sm font-bold uppercase text-[#141414]">
+                    Nenhum XML de NF-e/NFC-e carregado no banco
+                  </h4>
+                  <p className="text-[11px] text-[#141414]/70 font-sans leading-relaxed">
+                    Você pode consultar notas de compras na SEFAZ Nacional ou importar o faturamento diário (vendas emitidas pelo caixa/PDV).
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                  <button
+                    onClick={() => setIsUploadModalOpen(true)}
+                    className="px-3.5 py-2 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414] shadow-xs"
+                  >
+                    <UploadCloud className="w-4 h-4" />
+                    <span>Importar XMLs / ZIP do PDV (Vendas)</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSyncIncremental()}
+                    disabled={isSyncingSefaz || certificates.length === 0}
+                    className="px-3.5 py-2 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414]"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSefaz ? 'animate-spin' : ''}`} />
+                    <span>Sincronizar Compras na SEFAZ</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsChaveModalOpen(true)}
+                    className="px-3.5 py-2 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 border border-[#141414]"
+                  >
+                    <Search className="w-3.5 h-3.5" />
+                    <span>Consultar por Chave</span>
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -1674,6 +1829,119 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
                 className="px-3 py-1.5 bg-[#141414] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm"
               >
                 Fechar
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: XML UPLOADER & ZIP IMPORTER (PDV / SALES / SUPPLIERS) */}
+      {/* ========================================================================= */}
+      <XmlUploaderModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        invoices={invoices}
+        onInvoicesChange={onInvoicesChange}
+        pdvProducts={[]}
+        mkpConfig={{
+          metaMkpPadrao: 2.2,
+          aliquotaImpostoPadrao: 0.18,
+          comissaoPadrao: 0.05,
+          despesasFixasPadrao: 0.10,
+          margemLucroAlvo: 0.15
+        }}
+      />
+
+      {/* ========================================================================= */}
+      {/* MODAL: CONSULTAR NF-E POR CHAVE DE ACESSO (44 DÍGITOS) */}
+      {/* ========================================================================= */}
+      {isChaveModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-5">
+          <div className="bg-[#F0EFED] border border-[#141414] rounded-sm max-w-lg w-full flex flex-col shadow-2xl font-mono">
+            
+            {/* Header */}
+            <div className="p-3.5 bg-[#141414] text-[#E4E3E0] flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Search className="w-4 h-4 text-[#E4E3E0]" />
+                <span className="font-bold text-xs uppercase">
+                  Consulta de NF-e por Chave de Acesso (SEFAZ)
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setIsChaveModalOpen(false);
+                  setChaveInput('');
+                }}
+                className="text-[#E4E3E0] hover:text-white text-sm font-bold px-1.5"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-4 space-y-3.5 text-xs">
+              <p className="text-[11px] text-[#141414]/80 font-sans">
+                Informe a chave de 44 dígitos da Nota Fiscal Eletrônica. O sistema enviará uma requisição SOAP oficial (<code className="font-mono bg-[#E4E3E0] px-1 py-0.5 border border-[#141414]/30 text-[10px]">consChNFe</code>) autenticada com o seu certificado digital A1.
+              </p>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase text-[#141414]/70">
+                  Chave de Acesso da NF-e (44 dígitos):
+                </label>
+                <input
+                  type="text"
+                  maxLength={44}
+                  value={chaveInput}
+                  onChange={(e) => setChaveInput(e.target.value.replace(/\D/g, ''))}
+                  placeholder="35240812345678000190550010000012341234567890"
+                  className="w-full p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-sm font-mono text-xs font-bold tracking-wider"
+                  autoFocus
+                />
+                <div className="flex justify-between text-[10px] text-[#141414]/60">
+                  <span>Apenas números</span>
+                  <span className={chaveInput.length === 44 ? 'text-emerald-700 font-bold' : 'text-[#141414]/60'}>
+                    {chaveInput.length}/44 dígitos
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-2.5 bg-[#E4E3E0] border border-[#141414] rounded-xs text-[10px] text-[#141414]/80">
+                <strong>Certificado em uso:</strong> {activeCertificate?.razaoSocial || (certificates[0]?.razaoSocial ?? 'Nenhum')} ({activeCertificate?.cnpj || (certificates[0]?.cnpj ?? '-')})
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-3 bg-[#E4E3E0] border-t border-[#141414] flex justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsChaveModalOpen(false);
+                  setChaveInput('');
+                }}
+                disabled={isConsultingChave}
+                className="px-3 py-1.5 bg-[#E4E3E0] hover:bg-[#d8d6d2] text-[#141414] font-bold text-xs uppercase rounded-sm border border-[#141414]"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConsultarChave(chaveInput)}
+                disabled={isConsultingChave || chaveInput.length !== 44}
+                className="px-4 py-1.5 bg-[#141414] hover:bg-[#2a2a2a] text-[#E4E3E0] font-bold text-xs uppercase rounded-sm flex items-center space-x-1.5 disabled:opacity-50"
+              >
+                {isConsultingChave ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Consultando SEFAZ...</span>
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-3.5 h-3.5" />
+                    <span>Consultar & Baixar XML</span>
+                  </>
+                )}
               </button>
             </div>
 
