@@ -242,7 +242,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
   // 1. Sincronização Incremental (Apenas o que é novo ou sofreu alterações: novas notas, CC-e, cancelamentos)
   const handleSyncIncremental = async (targetCert?: SefazCertificate) => {
-    const certToUse = targetCert || activeCertificate || certificates.find(c => c.cnpj === selectedStoreCnpj) || (certificates.length > 0 ? certificates[0] : null);
+    const certToUse = targetCert || (selectedStoreCnpj !== 'ALL' && certificates.find(c => c.cnpj === selectedStoreCnpj)) || activeCertificate || (certificates.length > 0 ? certificates[0] : null);
     
     if (!certToUse) {
       setErrorMessage('Adicione ou selecione um certificado digital A1 antes de consultar a SEFAZ.');
@@ -296,7 +296,7 @@ export const SefazCertificateManager: React.FC<SefazCertificateManagerProps> = (
 
   // 2. Puxada Completa (Todos os NSUs desde o início até o final)
   const handleSyncFullPages = async (targetCert?: SefazCertificate) => {
-    const certToUse = targetCert || activeCertificate || certificates.find(c => c.cnpj === selectedStoreCnpj) || (certificates.length > 0 ? certificates[0] : null);
+    const certToUse = targetCert || (selectedStoreCnpj !== 'ALL' && certificates.find(c => c.cnpj === selectedStoreCnpj)) || activeCertificate || (certificates.length > 0 ? certificates[0] : null);
     
     if (!certToUse) {
       setErrorMessage('Adicione ou selecione um certificado digital A1 antes de consultar a SEFAZ.');

@@ -443,17 +443,24 @@ async function startServer() {
       // Make mTLS HTTPS request if session exists for this certificate
       let httpsAgent: https.Agent | undefined;
       if (session) {
+        const agentOptions: https.AgentOptions = {
+          rejectUnauthorized: false,
+          minVersion: "TLSv1.2",
+          maxVersion: "TLSv1.3",
+          ciphers: "ALL:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!aECDH:!EDH-DSS-DES-CBC3-SHA:!EDH-RSA-DES-CBC3-SHA:!KRB5-DES-CBC3-SHA"
+        };
+
         if (session.pfxBuffer) {
           httpsAgent = new https.Agent({
+            ...agentOptions,
             pfx: session.pfxBuffer,
-            passphrase: session.password,
-            rejectUnauthorized: false
+            passphrase: session.password
           });
         } else if (session.certPem && session.keyPem) {
           httpsAgent = new https.Agent({
+            ...agentOptions,
             cert: session.certPem,
-            key: session.keyPem,
-            rejectUnauthorized: false
+            key: session.keyPem
           });
         }
       }
